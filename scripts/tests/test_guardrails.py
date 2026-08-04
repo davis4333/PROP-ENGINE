@@ -197,6 +197,19 @@ def test_asof_cutoff_silent_when_adapters_module():
     assert "asof-cutoff-enforcement" not in _checks(path)
 
 
+def test_asof_cutoff_silent_when_features_module():
+    # Regression: feature builders only consume already as-of-resolved
+    # rows passed in by the caller (Raw* names appear as type hints only)
+    # -- they never query raw tables, so this previously false-positived
+    # on every feature-builder file.
+    path = _write(
+        "features/some_builder.py",
+        "from cassandra.db.models.raw import RawPitcherGameLog\n\n"
+        "def build(logs: list[RawPitcherGameLog]) -> dict:\n    return {}\n",
+    )
+    assert "asof-cutoff-enforcement" not in _checks(path)
+
+
 def test_clean_file_has_no_violations():
     path = _write(
         "clean/module.py", "def add(a: int, b: int) -> int:\n    return a + b\n"

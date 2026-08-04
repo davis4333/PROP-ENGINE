@@ -87,11 +87,16 @@ MUTATION_EXCLUDED_DIRS = ("db/migrations",)
 # (referencing raw_model as a write target) -- they never query raw
 # tables for a point-in-time read, so requiring ingested_at/observed_at
 # cutoff tokens there was a false positive on every adapter file.
+# "features" is allowed for the same reason in the opposite direction:
+# feature builders only ever *consume* already as-of-resolved rows passed
+# in by pit/snapshot_builder.py (Raw* names appear only as type hints) --
+# they never query raw tables themselves.
 ASOF_ALLOWED_DIRS = (
     "pit",
     "grading",
     "ingestion",
     "adapters",
+    "features",
     "db/migrations",
     "db/models",
 )
