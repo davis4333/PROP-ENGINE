@@ -183,6 +183,20 @@ def test_asof_cutoff_silent_when_pit_module():
     assert "asof-cutoff-enforcement" not in _checks(path)
 
 
+def test_asof_cutoff_silent_when_adapters_module():
+    # Regression: adapters reference raw_model classes as write targets
+    # (e.g. `raw_model = RawLine`) and set observed_at on RawRecord, but
+    # never set ingested_at (that's ingest_service's job at write time) --
+    # this previously false-positived on every adapter file.
+    path = _write(
+        "adapters/some_adapter.py",
+        "from cassandra.db.models.raw import RawLine\n\n"
+        "class SomeAdapter:\n    raw_model = RawLine\n\n"
+        "    def fetch(self):\n        return RawLine  # observed_at=...\n",
+    )
+    assert "asof-cutoff-enforcement" not in _checks(path)
+
+
 def test_clean_file_has_no_violations():
     path = _write(
         "clean/module.py", "def add(a: int, b: int) -> int:\n    return a + b\n"

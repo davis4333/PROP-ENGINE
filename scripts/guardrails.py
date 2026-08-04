@@ -83,7 +83,18 @@ SELF_TEST_EXEMPT_PATHS = ("scripts/tests/test_guardrails.py",)
 # are legitimately expected and therefore excluded from the relevant checks.
 BOX_SCORE_ALLOWED_DIRS = ("grading",)
 MUTATION_EXCLUDED_DIRS = ("db/migrations",)
-ASOF_ALLOWED_DIRS = ("pit", "grading", "ingestion", "db/migrations", "db/models")
+# "adapters" is allowed because adapters only ever *produce* RawRecords
+# (referencing raw_model as a write target) -- they never query raw
+# tables for a point-in-time read, so requiring ingested_at/observed_at
+# cutoff tokens there was a false positive on every adapter file.
+ASOF_ALLOWED_DIRS = (
+    "pit",
+    "grading",
+    "ingestion",
+    "adapters",
+    "db/migrations",
+    "db/models",
+)
 
 SECRET_PATTERNS = [
     (re.compile(r"AKIA[0-9A-Z]{16}"), "AWS access key ID"),
