@@ -15,6 +15,7 @@ import httpx
 import pytest
 import respx
 
+from cassandra.adapters.final_box_scores_mlb import LIVE_FEED_BASE, FinalBoxScoresMLBAdapter
 from cassandra.adapters.lines_manual import LinesManualAdapter
 from cassandra.adapters.park_factors_static import NEUTRAL_K_FACTOR, ParkFactorsStaticAdapter
 from cassandra.adapters.pitcher_game_logs_mlb import PitcherGameLogsMLBAdapter
@@ -209,3 +210,41 @@ def test_lines_manual_no_matching_file_is_unavailable(lines_drop_dir: Path):
 def test_lines_manual_missing_drop_dir_is_unavailable(tmp_path: Path):
     result = LinesManualAdapter(drop_dir=tmp_path / "does_not_exist").fetch(slate_date=SLATE_DATE)
     assert result.is_available is False
+
+
+# --- final box scores ----------------------------------------------------
+
+
+@respx.mock
+def test_final_box_scores_adapter_parses_real_response():
+    respx.get(f"{LIVE_FEED_BASE}/game/717753/feed/live").mock(
+        return_value=httpx.Response(200, json=_load("game_feed_717753.json"))
+    )
+    result = FinalBoxScoresMLBAdapter(http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, mlb_game_pks=[717753]
+    )
+    assert result.is_available
+    kikuchi = next(r for r in result.records if r.fields["player_mlb_id"] == 579328)
+    assert kikuchi.fields["mlb_game_pk"] == 717753
+    assert kikuchi.fields["strikeouts_recorded"] == 7
+    assert kikuchi.fields["game_status"] == "Final"
+    assert kikuchi.fields["pitch_count"] == 94
+    # every pitcher in either team's boxscore, not just the one checked above
+    assert len(result.records) >= 5
+
+
+@respx.mock
+def test_final_box_scores_adapter_handles_http_failure_without_raising():
+    respx.get(f"{LIVE_FEED_BASE}/game/717753/feed/live").mock(return_value=httpx.Response(500))
+    result = FinalBoxScoresMLBAdapter(http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, mlb_game_pks=[717753]
+    )
+    assert result.is_available is False
+    assert result.records == []
+    assert result.warnings
+
+
+def test_final_box_scores_adapter_no_game_pks_is_unavailable():
+    result = FinalBoxScoresMLBAdapter(http_client=httpx.Client()).fetch(slate_date=SLATE_DATE)
+    assert result.is_available is False
+    assert result.records == []
