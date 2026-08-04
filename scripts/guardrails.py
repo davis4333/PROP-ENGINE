@@ -98,6 +98,7 @@ ASOF_ALLOWED_DIRS = (
     "adapters",
     "features",
     "orchestration",
+    "api",
     "db/migrations",
     "db/models",
 )

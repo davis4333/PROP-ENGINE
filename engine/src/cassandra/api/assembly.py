@@ -1,18 +1,43 @@
 """Assembles `ProjectionOut` from a `Projection` row plus its cheap
 identity joins (player/team names) and optional current grade. Shared by
-the today/ledger routers so both surfaces stay consistent -- see
-CLAUDE.md's do-not-do list: this only ever reads already-published
-`projections`/`grades` rows, never raw_* tables.
+the today/ledger routers so both surfaces stay consistent.
+
+Per CLAUDE.md's do-not-do list, `raw_final_box_scores` (outcome data) is
+never read here. `raw_probable_pitchers` is a narrow, deliberate
+exception: it's the only place "which side is this pitcher on" is
+recorded, and that's needed to label `team`/`opponent` correctly (not
+just "home"/"away") for display. This is a current-best-known-value
+lookup for UI labeling, not a point-in-time-bounded decision input, so it
+intentionally does not go through pit/asof.py's cutoff filtering -- the
+already-published `decision`/`line`/etc. on the projection are never
+touched by this lookup.
 """
 
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cassandra.api.schemas import GradeOut, ProjectionOut, ReasonCodeOut
 from cassandra.db.models.grading import Grade
 from cassandra.db.models.identity import Game, Player, Team
 from cassandra.db.models.projection import Projection
+from cassandra.db.models.raw import RawProbablePitcher
+
+
+def _pitcher_team_mlb_id(session: Session, game: Game, player: Player | None) -> int | None:
+    if game.mlb_game_pk is None or player is None or player.mlb_person_id is None:
+        return None
+    stmt = (
+        select(RawProbablePitcher.team_mlb_id)
+        .where(
+            RawProbablePitcher.mlb_game_pk == game.mlb_game_pk,
+            RawProbablePitcher.player_mlb_id == player.mlb_person_id,
+        )
+        .order_by(RawProbablePitcher.ingested_at.desc())
+        .limit(1)
+    )
+    return session.execute(stmt).scalars().first()
 
 
 def assemble_projection_out(session: Session, projection: Projection, grade: Grade | None) -> ProjectionOut:
@@ -26,8 +51,11 @@ def assemble_projection_out(session: Session, projection: Projection, grade: Gra
         scheduled_start_utc = game.scheduled_start_utc
         home = session.get(Team, game.home_team_id) if game.home_team_id else None
         away = session.get(Team, game.away_team_id) if game.away_team_id else None
-        team_name = home.name if home else None
-        opponent_name = away.name if away else None
+        pitcher_team_mlb_id = _pitcher_team_mlb_id(session, game, player)
+        if pitcher_team_mlb_id is not None and away is not None and away.mlb_team_id == pitcher_team_mlb_id:
+            team_name, opponent_name = away.name, (home.name if home else None)
+        else:
+            team_name, opponent_name = (home.name if home else None), (away.name if away else None)
 
     return ProjectionOut(
         projection_id=projection.projection_id,

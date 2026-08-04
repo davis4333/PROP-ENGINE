@@ -210,6 +210,20 @@ def test_asof_cutoff_silent_when_features_module():
     assert "asof-cutoff-enforcement" not in _checks(path)
 
 
+def test_asof_cutoff_silent_when_api_module():
+    # Regression: api/assembly.py queries RawProbablePitcher.team_mlb_id
+    # directly (not through pit/asof.py) -- a deliberate exception since
+    # it's a current-best-known-value lookup for display labeling
+    # ("team" vs "opponent"), not a point-in-time-bounded decision input.
+    path = _write(
+        "api/assembly.py",
+        "from cassandra.db.models.raw import RawProbablePitcher\n\n"
+        "def team_for(session, game_pk, player_id):\n"
+        "    return session.query(RawProbablePitcher).filter_by(mlb_game_pk=game_pk).first()\n",
+    )
+    assert "asof-cutoff-enforcement" not in _checks(path)
+
+
 def test_asof_cutoff_silent_when_orchestration_module():
     # Regression: run_slate.py passes Raw* model classes into
     # pit/asof.py's all_as_of()/latest_as_of() (which does the real

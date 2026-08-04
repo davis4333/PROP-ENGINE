@@ -9,7 +9,7 @@ alter how timestamps are stored, compared, or filtered.
 
 from __future__ import annotations
 
-import subprocess
+import subprocess  # nosec B404 -- only used below with a fixed argv, no shell
 from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -52,7 +52,10 @@ def get_git_commit_sha() -> str | None:
     if settings.git_commit_sha:
         return settings.git_commit_sha
     try:
-        result = subprocess.run(
+        # Fixed argv, no shell, no untrusted input -- not the command
+        # injection / partial-path risk bandit's B603/B607 generically
+        # flag subprocess calls for.
+        result = subprocess.run(  # nosec B603 B607
             ["git", "rev-parse", "HEAD"],
             cwd=Path(__file__).resolve().parent,
             capture_output=True,

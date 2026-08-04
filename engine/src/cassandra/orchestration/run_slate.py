@@ -250,7 +250,12 @@ def run_slate(
         _stage(session, run_id, "PUBLISH", "running", started=True)
         for i, entry in enumerate(projectable):
             raw_line, decision = decisions_by_entry[i]
-            assert entry.probable is not None  # guaranteed by the `projectable` filter above
+            if entry.probable is None:
+                # Unreachable: `projectable` above already filtered these
+                # out. Explicit check (not `assert`, which optimized
+                # bytecode can strip) so this can never silently mis-key
+                # a projection to the wrong pitcher.
+                raise RuntimeError("projectable entry unexpectedly has no probable pitcher")
             player_id = mlb_player_id(entry.probable.player_mlb_id)
             session.add(
                 FeatureValue(
