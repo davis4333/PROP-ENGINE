@@ -74,7 +74,14 @@ def _make_box_score(
     player_mlb_id: int,
     strikeouts: int | None,
     status: str = "Final",
+    ingested_at: datetime | None = None,
 ) -> RawFinalBoxScore:
+    # Postgres `now()` (this model's ingested_at server_default) is
+    # evaluated once per transaction, not per statement -- since every
+    # test here runs inside one transaction (see conftest.py's db_session
+    # fixture), two box scores for the same outing would otherwise tie on
+    # ingested_at. Tests that insert a correction must pass explicit,
+    # distinct ingested_at values.
     row = RawFinalBoxScore(
         raw_id=uuid.uuid4(),
         source_id=source_id,
@@ -85,6 +92,7 @@ def _make_box_score(
         pitch_count=95,
         game_status=status,
         observed_at=NOW,
+        ingested_at=ingested_at or NOW,
         payload={"strikeouts": strikeouts, "status": status},
     )
     session.add(row)
@@ -287,7 +295,14 @@ def test_correction_appends_new_grade_without_mutating_first(db_session):
         db_session, snapshot=snapshot, game=game, player_id=player.player_id, line=5.5, mean=8.0
     )
 
-    _make_box_score(db_session, source_id=source.source_id, mlb_game_pk=119, player_mlb_id=1009, strikeouts=3)
+    _make_box_score(
+        db_session,
+        source_id=source.source_id,
+        mlb_game_pk=119,
+        player_mlb_id=1009,
+        strikeouts=3,
+        ingested_at=NOW,
+    )
     first = grade_projection(db_session, projection, run_id="run-grade-1")
     db_session.flush()
     assert first is not None
@@ -296,7 +311,14 @@ def test_correction_appends_new_grade_without_mutating_first(db_session):
 
     # official scorer correction: a later-ingested Final row with a
     # different strikeout count
-    _make_box_score(db_session, source_id=source.source_id, mlb_game_pk=119, player_mlb_id=1009, strikeouts=7)
+    _make_box_score(
+        db_session,
+        source_id=source.source_id,
+        mlb_game_pk=119,
+        player_mlb_id=1009,
+        strikeouts=7,
+        ingested_at=NOW + timedelta(seconds=1),
+    )
     second = grade_projection(db_session, projection, run_id="run-grade-2")
     db_session.flush()
 

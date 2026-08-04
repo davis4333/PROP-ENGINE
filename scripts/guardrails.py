@@ -97,6 +97,7 @@ ASOF_ALLOWED_DIRS = (
     "ingestion",
     "adapters",
     "features",
+    "orchestration",
     "db/migrations",
     "db/models",
 )

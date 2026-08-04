@@ -210,6 +210,23 @@ def test_asof_cutoff_silent_when_features_module():
     assert "asof-cutoff-enforcement" not in _checks(path)
 
 
+def test_asof_cutoff_silent_when_orchestration_module():
+    # Regression: run_slate.py passes Raw* model classes into
+    # pit/asof.py's all_as_of()/latest_as_of() (which does the real
+    # ingested_at/observed_at filtering) rather than querying them
+    # directly -- this previously false-positived because the model name
+    # appears as a bare argument, not alongside the literal
+    # ingested_at/observed_at text.
+    path = _write(
+        "orchestration/run_slate.py",
+        "from cassandra.db.models.raw import RawProbablePitcher\n"
+        "from cassandra.pit.asof import all_as_of\n\n"
+        "def ingest_slate(session, cutoff):\n"
+        "    return all_as_of(session, RawProbablePitcher, {}, cutoff)\n",
+    )
+    assert "asof-cutoff-enforcement" not in _checks(path)
+
+
 def test_clean_file_has_no_violations():
     path = _write(
         "clean/module.py", "def add(a: int, b: int) -> int:\n    return a + b\n"

@@ -69,7 +69,7 @@ def build_snapshot(
     session.add(snapshot)
     session.flush()  # assign snapshot_id
 
-    games = _games_for_slate_date(session, slate_date)
+    games = games_for_slate_date(session, slate_date)
     entries: list[PitcherSlateEntry] = []
     # A game-level fact (park factor, weather) is referenced once per
     # team/pitcher below; dedupe so the same (raw_table, raw_id) isn't
@@ -211,12 +211,16 @@ def build_snapshot(
     return snapshot, entries
 
 
-def _games_for_slate_date(session: Session, slate_date: date) -> list[Game]:
+def games_for_slate_date(session: Session, slate_date: date) -> list[Game]:
     """Games are stored with a UTC scheduled_start_utc; slate membership
     is derived via config.slate_date_for (ADR 0009), not a raw date
     match, since a UTC calendar day can span two operating-timezone
     slate-dates. Query a generous UTC window, then filter precisely in
-    Python."""
+    Python.
+
+    Public (not `_`-prefixed): shared with orchestration/run_slate.py,
+    which needs "which games are in this slate" during INGEST, before a
+    snapshot exists to derive it from."""
     window_start = datetime.combine(slate_date, time.min, tzinfo=UTC) - timedelta(days=1)
     window_end = window_start + timedelta(days=3)
     stmt = select(Game).where(Game.scheduled_start_utc >= window_start, Game.scheduled_start_utc < window_end)

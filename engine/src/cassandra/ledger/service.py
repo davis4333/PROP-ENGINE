@@ -50,7 +50,7 @@ def publish_projection(
     snapshot: Snapshot,
     game: Game,
     player_id: str,
-    line: float,
+    line: float | None,
     feature_set_version: str,
     features: dict[str, object],
     model_version: str,
@@ -59,7 +59,13 @@ def publish_projection(
     publish: bool = True,
 ) -> Projection:
     """Writes a new (or version-superseding) projections row. Always an
-    INSERT -- rerunning a slate never mutates a prior row."""
+    INSERT -- rerunning a slate never mutates a prior row.
+
+    `line=None` is legitimate: it means no market line was found for this
+    player/game as of the freeze cutoff (MARKET_CONTEXT_INCOMPLETE, a fail
+    finding decide() already turned into REJECTED/NO_PLAY) -- the
+    projection is still logged for transparency, just with no line to
+    grade against later."""
     logical_key = logical_key_for(player_id, game.game_id)
     existing = latest_version(session, logical_key)
     version = (existing.version + 1) if existing else 1
