@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+web/.env.local
+
+# Env
+.env
+*.env.local
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Local data drops (Underdog lines stand-in, not committed)
+engine/data/lines_drops/*
+!engine/data/lines_drops/.gitkeep
+
+# Scratch staging area for the PreToolUse guardrails hook (see
+# scripts/pretool_guardrails_check.py) -- always cleaned up after use.
+.guardrail_precheck/

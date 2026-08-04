@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "engine/.venv/bin/python scripts/pretool_guardrails_check.py 2>/dev/null || echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'",
+            "timeout": 20,
+            "statusMessage": "Checking Cassandra guardrails (point-in-time / immutability safeguards)..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "scripts/posttool_ruff_lint.sh",
+            "timeout": 20,
+            "statusMessage": "Running ruff..."
+          },
+          {
+            "type": "command",
+            "command": "scripts/posttool_eslint_lint.sh",
+            "timeout": 30,
+            "statusMessage": "Running eslint..."
+          }
+        ]
+      }
+    ]
+  }
+}

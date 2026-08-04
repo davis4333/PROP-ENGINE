@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cassandra}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cassandra_dev_only}
+      POSTGRES_DB: ${POSTGRES_DB:-cassandra}
+    ports:
+      - "5432:5432"
+    volumes:
+      - cassandra_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cassandra}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  engine:
+    build:
+      context: ./engine
+    command: uvicorn cassandra.api.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-cassandra}:${POSTGRES_PASSWORD:-cassandra_dev_only}@postgres:5432/${POSTGRES_DB:-cassandra}
+      OPERATING_TIMEZONE: ${OPERATING_TIMEZONE:-America/New_York}
+      DECISION_EDGE_THRESHOLD: ${DECISION_EDGE_THRESHOLD:-0.05}
+      ADMIN_SHARED_SECRET: ${ADMIN_SHARED_SECRET:-change-me-dev-only}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./engine:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  cassandra_pgdata:

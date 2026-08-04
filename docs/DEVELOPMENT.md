@@ -1,0 +1,102 @@
+# Development Guide
+
+## Prerequisites
+
+| Tool | Version used in this repo | Check |
+|---|---|---|
+| git | 2.43+ | `git --version` |
+| Docker + Docker Compose | Compose v2+ | `docker compose version` |
+| Python | 3.12 | `python3.12 --version` |
+| [uv](https://docs.astral.sh/uv/) | 0.8+ | `uv --version` |
+| Node.js | 22 LTS | `node --version` |
+| [pnpm](https://pnpm.io/) | 10+ | `pnpm --version` |
+| PostgreSQL client (`psql`) | 16 | `psql --version` |
+| make, curl, jq | any recent | — |
+
+`gh` (GitHub CLI) is intentionally **not** part of this toolchain in
+Claude-Code-on-the-web sessions — GitHub interaction there goes through the
+GitHub MCP server instead. If you're on a normal workstation, `gh` is fine
+to use for anything not covered by the tools below.
+
+## First-time setup
+
+```bash
+cp .env.example .env
+
+make install          # uv-installs engine/[dev], pnpm-installs web/
+make db-up             # docker compose up -d postgres
+make migrate-check     # alembic upgrade head
+```
+
+## Everyday commands
+
+```bash
+make lint              # ruff (engine) + eslint (web)
+make format-check       # ruff format --check + prettier --check
+make typecheck          # mypy (engine) + tsc --noEmit (web)
+make security            # bandit + pip-audit
+make guardrails           # scripts/guardrails.py point-in-time/immutability safeguards
+make test-engine           # pytest engine/tests + scripts/tests (includes PIT leakage suite)
+make test-web                # vitest + playwright
+make build-web                 # next build
+make verify                     # the whole gate, in order -- run before calling anything done
+```
+
+`make verify` is also what CI runs (as two parallel jobs — `engine` and
+`web` — rather than one sequential `make verify` invocation, but the same
+checks). See `.github/workflows/ci.yml`.
+
+## Repository layout
+
+```
+engine/                 Python (FastAPI + SQLAlchemy + Alembic) -- the data/model/decision engine
+  src/cassandra/
+    db/models/           SQLAlchemy models (identity, sources, raw_*, snapshots, projections, grades, audit, pipeline)
+    db/migrations/        Alembic migrations
+    adapters/               Pluggable SourceAdapter implementations (Phase 1+)
+    pit/                     Point-in-time / as-of query helpers (Phase 1+)
+    features/, models/, decision/, ledger/, grading/, orchestration/   (Phase 2+)
+    api/, cli/                FastAPI app and Typer CLI
+  tests/
+    pit/                     Point-in-time leakage regression suite -- must always pass
+    fixtures/                 Synthetic slate fixtures for adapters/backtests
+web/                    Next.js (App Router, TypeScript strict) -- Today/Ledger/Admin, built after the engine vertical slice
+scripts/
+  guardrails.py             Static safeguard checks (see docs/AI_ENGINEERING_CONTROLS.md)
+  pretool_guardrails_check.py   The PreToolUse hook wrapper around guardrails.py
+  posttool_ruff_lint.sh, posttool_eslint_lint.sh   PostToolUse lint hooks
+docs/
+  handbook.md, adr/*.md         Product spec + engineering decision records
+  DEVELOPMENT.md                 This file
+  AI_ENGINEERING_CONTROLS.md       Claude Code tooling: skills, subagents, hooks, CI, MCP scope
+CLAUDE.md               Read order, non-negotiables, do-not-do list for anyone (human or Claude) working in this repo
+```
+
+## Database
+
+Local Postgres runs via `docker compose up -d postgres` (see
+`docker-compose.yml`), matching `DATABASE_URL` in `.env.example`. Alembic
+migrations live under `engine/src/cassandra/db/migrations/versions/`. The
+first migration also revokes `UPDATE`/`DELETE` on the append-only tables
+(`raw_*`, `projections`, `grades`, `audit_events`) for the application DB
+role — see ADR 0001 and `CLAUDE.md`'s do-not-do list. Never hand-edit an
+already-applied migration file; write a new one (this is enforced by
+`scripts/guardrails.py`'s `no-migration-tampering` check).
+
+## Adding a new source adapter
+
+See the `cassandra-data-adapter` skill (`.claude/skills/cassandra-data-adapter/SKILL.md`)
+and `engine/src/cassandra/adapters/base.py` (once Phase 1 lands) for the
+`SourceAdapter` contract. In short: never raise for "no data available,"
+return `AdapterFetchResult(records, is_available, warnings)`, and let the
+pipeline turn absence into a visible reason code rather than a silent gap.
+
+## Point-in-time correctness
+
+This is the one thing in this codebase that must never regress. Before
+touching anything upstream of the decision engine (adapters, ingestion,
+snapshots, features, models), read ADR 0001
+(`docs/adr/0001-point-in-time-cutoff-semantics.md`) and use the
+`cassandra-pit-audit` skill or the `point-in-time-auditor` subagent — the
+latter is deliberately independent/adversarial and should not be the same
+session that wrote the change under review.

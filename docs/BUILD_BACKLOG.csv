@@ -1,0 +1,52 @@
+phase,order,task,status,owner,definition_of_done
+P0 Foundation,1,Repository audit,NOT STARTED,,Must satisfy handbook acceptance criteria
+P0 Foundation,2,Environment and secrets,NOT STARTED,,Must satisfy handbook acceptance criteria
+P0 Foundation,3,Core identifiers,NOT STARTED,,Must satisfy handbook acceptance criteria
+P0 Foundation,4,Audit event framework,NOT STARTED,,Must satisfy handbook acceptance criteria
+P0 Foundation,5,Source registry schema,NOT STARTED,,Must satisfy handbook acceptance criteria
+P0 Foundation,6,CI test baseline,NOT STARTED,,Must satisfy handbook acceptance criteria
+P1 Strikeout Data,1,Underdog line adapter,NOT STARTED,,Must satisfy handbook acceptance criteria
+P1 Strikeout Data,2,MLB schedule and game identity,NOT STARTED,,Must satisfy handbook acceptance criteria
+P1 Strikeout Data,3,Probable starter ingestion,NOT STARTED,,Must satisfy handbook acceptance criteria
+P1 Strikeout Data,4,Lineup snapshot,NOT STARTED,,Must satisfy handbook acceptance criteria
+P1 Strikeout Data,5,Pitcher game logs and pitch data,NOT STARTED,,Must satisfy handbook acceptance criteria
+P1 Strikeout Data,6,Weather/park/umpire context,NOT STARTED,,Must satisfy handbook acceptance criteria
+P1 Strikeout Data,7,Point-in-time snapshot builder,NOT STARTED,,Must satisfy handbook acceptance criteria
+P1 Strikeout Data,8,Data quality dashboard,NOT STARTED,,Must satisfy handbook acceptance criteria
+P2 Strikeout Engine,1,Naive baseline,NOT STARTED,,Must satisfy handbook acceptance criteria
+P2 Strikeout Engine,2,Feature registry,NOT STARTED,,Must satisfy handbook acceptance criteria
+P2 Strikeout Engine,3,Walk-forward backtest,NOT STARTED,,Must satisfy handbook acceptance criteria
+P2 Strikeout Engine,4,Leakage test suite,NOT STARTED,,Must satisfy handbook acceptance criteria
+P2 Strikeout Engine,5,Candidate model evaluation,NOT STARTED,,Must satisfy handbook acceptance criteria
+P2 Strikeout Engine,6,Calibration,NOT STARTED,,Must satisfy handbook acceptance criteria
+P2 Strikeout Engine,7,Uncertainty and disagreement,NOT STARTED,,Must satisfy handbook acceptance criteria
+P2 Strikeout Engine,8,Decision thresholds,NOT STARTED,,Must satisfy handbook acceptance criteria
+P2 Strikeout Engine,9,No-play reason codes,NOT STARTED,,Must satisfy handbook acceptance criteria
+P3 Ledger,1,Projection run orchestration,NOT STARTED,,Must satisfy handbook acceptance criteria
+P3 Ledger,2,Immutable projection ledger,NOT STARTED,,Must satisfy handbook acceptance criteria
+P3 Ledger,3,Publication approval,NOT STARTED,,Must satisfy handbook acceptance criteria
+P3 Ledger,4,X post payload,NOT STARTED,,Must satisfy handbook acceptance criteria
+P3 Ledger,5,Official result ingestion,NOT STARTED,,Must satisfy handbook acceptance criteria
+P3 Ledger,6,Grading engine,NOT STARTED,,Must satisfy handbook acceptance criteria
+P3 Ledger,7,Public record reconciliation,NOT STARTED,,Must satisfy handbook acceptance criteria
+P4 Proof,1,Historical audit,NOT STARTED,,Must satisfy handbook acceptance criteria
+P4 Proof,2,Shadow live runs,NOT STARTED,,Must satisfy handbook acceptance criteria
+P4 Proof,3,Live data incident drills,NOT STARTED,,Must satisfy handbook acceptance criteria
+P4 Proof,4,Calibration dashboard,NOT STARTED,,Must satisfy handbook acceptance criteria
+P4 Proof,5,Segment analysis,NOT STARTED,,Must satisfy handbook acceptance criteria
+P4 Proof,6,Model card,NOT STARTED,,Must satisfy handbook acceptance criteria
+P4 Proof,7,Promotion gate,NOT STARTED,,Must satisfy handbook acceptance criteria
+P5 Public MVP,1,Today page,NOT STARTED,,Must satisfy handbook acceptance criteria
+P5 Public MVP,2,All projections table,NOT STARTED,,Must satisfy handbook acceptance criteria
+P5 Public MVP,3,Results ledger,NOT STARTED,,Must satisfy handbook acceptance criteria
+P5 Public MVP,4,Player detail,NOT STARTED,,Must satisfy handbook acceptance criteria
+P5 Public MVP,5,Methodology,NOT STARTED,,Must satisfy handbook acceptance criteria
+P5 Public MVP,6,Admin control room,NOT STARTED,,Must satisfy handbook acceptance criteria
+P5 Public MVP,7,Responsive/mobile QA,NOT STARTED,,Must satisfy handbook acceptance criteria
+P5 Public MVP,8,Responsible gambling copy,NOT STARTED,,Must satisfy handbook acceptance criteria
+P6 Expansion,1,Total bases discovery,NOT STARTED,,Must satisfy handbook acceptance criteria
+P6 Expansion,2,RBI discovery,NOT STARTED,,Must satisfy handbook acceptance criteria
+P6 Expansion,3,Shared market framework,NOT STARTED,,Must satisfy handbook acceptance criteria
+P6 Expansion,4,Subscription design,NOT STARTED,,Must satisfy handbook acceptance criteria
+P6 Expansion,5,User accounts,NOT STARTED,,Must satisfy handbook acceptance criteria
+P6 Expansion,6,Premium feature experiments,NOT STARTED,,Must satisfy handbook acceptance criteria

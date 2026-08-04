@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  engine:
+    name: engine (lint, typecheck, security, guardrails, tests, migrations)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cassandra
+          POSTGRES_PASSWORD: cassandra_dev_only
+          POSTGRES_DB: cassandra
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cassandra"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://cassandra:cassandra_dev_only@localhost:5432/cassandra
+      OPERATING_TIMEZONE: America/New_York
+      DECISION_EDGE_THRESHOLD: "0.05"
+      ADMIN_SHARED_SECRET: ci-dev-only
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.8.17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install engine
+        run: uv pip install --system -e "./engine[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check engine/src engine/tests scripts
+
+      - name: Format check (ruff format)
+        run: ruff format --check engine/src engine/tests scripts
+
+      - name: Typecheck (mypy)
+        run: mypy engine/src
+
+      - name: Security — bandit
+        run: bandit -c engine/pyproject.toml -r engine/src
+
+      - name: Security — pip-audit
+        run: pip-audit --skip-editable
+
+      - name: Guardrails (point-in-time / immutability safeguards)
+        run: python scripts/guardrails.py
+
+      - name: Apply migrations
+        working-directory: engine
+        run: alembic upgrade head
+
+      - name: Tests (pytest, includes engine/tests/pit leakage suite)
+        working-directory: engine
+        run: pytest tests ../scripts/tests -v --cov=cassandra --cov-report=term-missing
+
+  web:
+    name: web (typecheck, lint, format, unit, e2e, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Lint
+        run: pnpm run lint
+      - name: Format check
+        run: pnpm run format:check
+      - name: Unit tests (vitest)
+        run: pnpm run test
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+      - name: E2E tests (playwright + axe)
+        run: pnpm run test:e2e
+      - name: Build
+        run: pnpm run build
+
+# CodeQL runs as its own standalone workflow (.github/workflows/codeql.yml)
+# on push/pull_request/schedule, not chained from here.

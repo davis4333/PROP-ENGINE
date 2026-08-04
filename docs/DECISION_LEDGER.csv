@@ -1,0 +1,29 @@
+status,decision,detail,source_basis
+CONFIRMED,Product identity,"Cassandra / CassandraHits is an MLB player-prop analysis and prediction platform named after Cassandra, the prophet whose correct warnings were not believed.",Prior Cassandra conversations summarized in project history
+CONFIRMED,Public tagline,DATA. MODELS. RESULTS.,Prior Cassandra conversations summarized in project history
+CONFIRMED,Primary objective,"Build the most accurate and trustworthy player-prop decision platform possible, optimized for the best chance of winning rather than the highest payout.",Prior Cassandra conversations summarized in project history
+CONFIRMED,Initial sport,MLB only until the system is proven and operationally reliable.,Prior Cassandra conversations summarized in project history
+CONFIRMED,Initial market,"Pitcher strikeouts first; perfect one vertical before adding total bases, RBIs, and other markets.",Prior Cassandra conversations summarized in project history
+CONFIRMED,Primary book/feed,Underdog is the intended first public line source and the book Tyler expects to use.,Prior Cassandra conversations summarized in project history
+CONFIRMED,Transparency,"Log every evaluated projection before first pitch, not only winning picks or recommended plays.",Prior Cassandra conversations summarized in project history
+CONFIRMED,Grades,"Use win, loss, push, void, and no-play outcomes; never delete losses.",Prior Cassandra conversations summarized in project history
+CONFIRMED,No forced action,Sometimes the correct decision is No Play. The system must not manufacture daily picks.,Prior Cassandra conversations summarized in project history
+CONFIRMED,Public growth plan,"Initially publish strong plays free, including on X, with a visible running record to prove performance before monetization.",Prior Cassandra conversations summarized in project history
+CONFIRMED,Monetization,"After proof, introduce an affordable subscription around $15–$20/month while keeping enough public value to maintain trust.",Prior Cassandra conversations summarized in project history
+CONFIRMED,Design language,"Near-black background, violet/purple glow accents, white text, subtle circuit and constellation details, premium fintech-meets-mythology aesthetic.",Prior Cassandra conversations summarized in project history
+CONFIRMED,Logo handling,Use the exact approved Cassandra logo; do not redesign it when creating branded assets.,Prior Cassandra conversations summarized in project history
+CONFIRMED,Pre-launch product,"Simple, highly visual, usable interface before a complex full platform. Show all lines and projections while highlighting the best qualified plays.",Prior Cassandra conversations summarized in project history
+CONFIRMED,Build philosophy,Backend/data/model integrity receives 110% effort; frontend only needs to be polished and clear enough to operate and compare results initially.,Prior Cassandra conversations summarized in project history
+CONFIRMED,Data integrity,Backtests and historical features must use information knowable at the exact historical prediction timestamp. Future-data leakage invalidates results.,Prior Cassandra conversations summarized in project history
+CONFIRMED,Learning,"The platform must grade outcomes, diagnose errors, monitor performance, and improve through controlled experiments and versioned model changes.",Prior Cassandra conversations summarized in project history
+CONFIRMED,Workflow preference,"Visual system maps, workflows, mockups, and concrete examples come before dense technical prose.",Prior Cassandra conversations summarized in project history
+UNRESOLVED,Exact Underdog acquisition method,"Confirm permitted, reliable method and legal/terms constraints before production ingestion.",Requires explicit owner decision
+UNRESOLVED,Official MLB data vendors,"Select primary and backup providers for schedules, probable pitchers, lineups, pitch-level data, weather, umpire assignments, injuries and results.",Requires explicit owner decision
+UNRESOLVED,Payout-specific decision math,Finalize payout structures and break-even assumptions for each Underdog contest format.,Requires explicit owner decision
+UNRESOLVED,Public confidence display,"Decide whether public users see probabilities, confidence tiers, edge ranges, or only simplified reasoning.",Requires explicit owner decision
+UNRESOLVED,Which projections are public,Decide whether all raw projections remain free forever or whether some analysis becomes premium after proof.,Requires explicit owner decision
+UNRESOLVED,Initial authentication,"Determine whether pre-launch public pages are anonymous and admin is private, or whether user accounts launch immediately.",Requires explicit owner decision
+UNRESOLVED,Hosting,"Choose between Replit for speed and a more conventional cloud stack after evaluating reliability, cost, scheduling, databases and observability.",Requires explicit owner decision
+UNRESOLVED,Model family,"Establish baseline and compare interpretable statistical models, gradient boosting and other candidates; do not preselect the winner.",Requires explicit owner decision
+UNRESOLVED,Minimum evidence before monetization,"Define sample size, calibration quality and live evaluation thresholds required before charging.",Requires explicit owner decision
+UNRESOLVED,Public posting cadence,Define exact timing and whether X posts are automatic or require human approval.,Requires explicit owner decision
