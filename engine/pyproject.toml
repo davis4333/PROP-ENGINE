@@ -56,6 +56,12 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
 
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's Depends()/Query()/Body() in argument defaults is the framework's
+# documented, required pattern -- not the mutable-default-argument bug B008
+# exists to catch.
+"src/cassandra/api/**" = ["B008"]
+
 [tool.mypy]
 python_version = "3.12"
 packages = ["cassandra"]

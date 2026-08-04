@@ -154,3 +154,27 @@ def current_projections_for_slate(session: Session, game_ids: list[str]) -> list
 def version_history(session: Session, logical_key: str) -> list[Projection]:
     stmt = select(Projection).where(Projection.logical_key == logical_key).order_by(Projection.version.desc())
     return list(session.execute(stmt).scalars().all())
+
+
+def recent_current_projections(session: Session, limit: int = 100) -> list[Projection]:
+    """The latest version of every projection across all slates, most
+    recently created first -- for the ledger view when no slate_date
+    filter is given. Same "current" derived-by-query pattern as
+    current_projections_for_slate, just without the game_ids filter."""
+    subq = (
+        select(
+            Projection.logical_key,
+            Projection.projection_id,
+            Projection.version,
+        )
+        .order_by(Projection.logical_key, Projection.version.desc())
+        .distinct(Projection.logical_key)
+        .subquery()
+    )
+    stmt = (
+        select(Projection)
+        .join(subq, Projection.projection_id == subq.c.projection_id)
+        .order_by(Projection.created_at.desc())
+        .limit(limit)
+    )
+    return list(session.execute(stmt).scalars().all())

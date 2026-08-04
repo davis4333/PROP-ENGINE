@@ -10,8 +10,15 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 
 
 def get_session() -> Generator[Session, None, None]:
+    """FastAPI dependency: one session per request, committed on success
+    and rolled back on any exception -- route/service code should never
+    need to call commit()/rollback() itself."""
     session = SessionLocal()
     try:
         yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
