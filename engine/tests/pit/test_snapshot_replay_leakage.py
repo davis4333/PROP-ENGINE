@@ -1,0 +1,186 @@
+"""Adversarial point-in-time leakage tests at the snapshot/feature level
+(ADR 0001). Where test_asof_primitive_leakage.py proves the as-of
+primitives themselves refuse to leak, these prove the guarantee survives
+through build_snapshot/build_features -- the actual path a real slate
+takes -- including the specific claim in db/models/raw.py's module
+docstring that `raw_final_box_scores` can never influence a projection.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from cassandra.db.models.identity import Game, Team
+from cassandra.db.models.raw import RawFinalBoxScore, RawProbablePitcher
+from cassandra.db.models.sources import Source
+from cassandra.features.builders import build_features
+from cassandra.pit.snapshot_builder import build_snapshot
+
+GAME_PK = 999101
+HOME_TEAM_MLB_ID = 110
+SLATE_DATE = datetime(2024, 4, 1).date()
+CUTOFF = datetime(2024, 4, 1, 22, 0, tzinfo=UTC)  # first pitch was 18:00 UTC
+BEFORE = CUTOFF - timedelta(hours=2)
+AFTER = CUTOFF + timedelta(hours=2)
+
+
+def _make_source(session, source_id: str, kind: str = "pitcher_stats") -> None:
+    stmt = pg_insert(Source).values(source_id=source_id, name=source_id, kind=kind)
+    stmt = stmt.on_conflict_do_nothing(index_elements=[Source.source_id])
+    session.execute(stmt)
+    session.flush()
+
+
+def _make_team(session, *, team_id: str, mlb_team_id: int) -> None:
+    stmt = pg_insert(Team).values(team_id=team_id, mlb_team_id=mlb_team_id, name=team_id)
+    stmt = stmt.on_conflict_do_nothing(index_elements=[Team.team_id])
+    session.execute(stmt)
+    session.flush()
+
+
+def _make_game(session, *, game_id: str, mlb_game_pk: int) -> Game:
+    _make_team(session, team_id="pit-home-team", mlb_team_id=HOME_TEAM_MLB_ID)
+    stmt = pg_insert(Game).values(
+        game_id=game_id,
+        mlb_game_pk=mlb_game_pk,
+        game_date=CUTOFF,
+        scheduled_start_utc=CUTOFF - timedelta(hours=4),
+        home_team_id="pit-home-team",
+        away_team_id=None,
+        venue_id=None,
+        status="Final",
+    )
+    session.execute(stmt)
+    session.flush()
+    return session.get(Game, game_id)
+
+
+def _probable(
+    session, *, source_id, mlb_game_pk, player_mlb_id, team_mlb_id, observed_at, ingested_at
+) -> None:
+    session.add(
+        RawProbablePitcher(
+            raw_id=uuid.uuid4(),
+            source_id=source_id,
+            mlb_game_pk=mlb_game_pk,
+            player_mlb_id=player_mlb_id,
+            team_mlb_id=team_mlb_id,
+            is_confirmed=True,
+            observed_at=observed_at,
+            ingested_at=ingested_at,
+            payload={},
+        )
+    )
+    session.flush()
+
+
+def test_late_arriving_starter_swap_invisible_to_a_snapshot_frozen_before_it(db_session):
+    """A pitcher gets scratched and replaced after the original snapshot's
+    cutoff. Rebuilding at the SAME cutoff must still show the original
+    starter -- the frozen point in time never moves just because more
+    data arrived."""
+    _make_source(db_session, "src-swap")
+    _make_game(db_session, game_id="pit-game-swap", mlb_game_pk=GAME_PK)
+
+    _probable(
+        db_session,
+        source_id="src-swap",
+        mlb_game_pk=GAME_PK,
+        player_mlb_id=5001,
+        team_mlb_id=HOME_TEAM_MLB_ID,
+        observed_at=BEFORE,
+        ingested_at=BEFORE,
+    )
+
+    snapshot, entries = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    entry = next(e for e in entries if e.team_mlb_id == HOME_TEAM_MLB_ID)
+    assert entry.probable is not None
+    assert entry.probable.player_mlb_id == 5001
+
+    # The scratch/replacement arrives -- physically written after the
+    # original cutoff.
+    _probable(
+        db_session,
+        source_id="src-swap",
+        mlb_game_pk=GAME_PK,
+        player_mlb_id=5002,
+        team_mlb_id=HOME_TEAM_MLB_ID,
+        observed_at=AFTER,
+        ingested_at=AFTER,
+    )
+
+    # Rebuilding at the SAME cutoff (as a replay/backtest would) must
+    # reproduce the exact same frozen view -- never the replacement.
+    _, entries_replayed = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    entry_replayed = next(e for e in entries_replayed if e.team_mlb_id == HOME_TEAM_MLB_ID)
+    assert entry_replayed.probable is not None
+    assert entry_replayed.probable.player_mlb_id == 5001, (
+        "replaying the same cutoff must never pick up data ingested after it"
+    )
+
+
+def test_rerun_at_same_cutoff_creates_a_new_snapshot_never_mutates_the_first(db_session):
+    _make_source(db_session, "src-rerun")
+    _make_game(db_session, game_id="pit-game-rerun", mlb_game_pk=GAME_PK + 1)
+    _probable(
+        db_session,
+        source_id="src-rerun",
+        mlb_game_pk=GAME_PK + 1,
+        player_mlb_id=6001,
+        team_mlb_id=HOME_TEAM_MLB_ID,
+        observed_at=BEFORE,
+        ingested_at=BEFORE,
+    )
+    first, _ = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    second, _ = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+
+    assert first.snapshot_id != second.snapshot_id
+    assert first.status == "frozen"
+    assert second.status == "frozen"
+
+
+def test_final_box_score_value_never_appears_in_computed_features(db_session):
+    """Seed a Final box score for the exact player/game being projected,
+    with a deliberately extreme, unmistakable value. If it ever leaked
+    into feature computation, it would completely dominate expected_bf/
+    recent_k_rate. Assert it does not appear anywhere in the output."""
+    _make_source(db_session, "src-boxleak", kind="pitcher_stats")
+    _make_game(db_session, game_id="pit-game-boxleak", mlb_game_pk=GAME_PK + 2)
+    player_mlb_id = 7001
+    _probable(
+        db_session,
+        source_id="src-boxleak",
+        mlb_game_pk=GAME_PK + 2,
+        player_mlb_id=player_mlb_id,
+        team_mlb_id=HOME_TEAM_MLB_ID,
+        observed_at=BEFORE,
+        ingested_at=BEFORE,
+    )
+
+    sentinel = 999999
+    db_session.add(
+        RawFinalBoxScore(
+            raw_id=uuid.uuid4(),
+            source_id="src-boxleak",
+            mlb_game_pk=GAME_PK + 2,
+            player_mlb_id=player_mlb_id,
+            strikeouts_recorded=sentinel,
+            innings_pitched=6.0,
+            pitch_count=95,
+            game_status="Final",
+            observed_at=BEFORE,
+            ingested_at=BEFORE,
+            payload={"strikeouts": sentinel},
+        )
+    )
+    db_session.flush()
+
+    _, entries = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    entry = next(e for e in entries if e.team_mlb_id == HOME_TEAM_MLB_ID)
+    features = build_features(entry, CUTOFF)
+
+    assert sentinel not in features.values()
+    assert str(sentinel) not in str(features), "the sentinel box-score value leaked into computed features"
