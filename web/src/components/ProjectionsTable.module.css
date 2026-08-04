@@ -1,0 +1,67 @@
+.wrapper {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid rgba(250, 250, 250, 0.08);
+  border-radius: 12px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.table th {
+  text-align: left;
+  padding: 0.75rem 1rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a1a1aa;
+  border-bottom: 1px solid rgba(250, 250, 250, 0.08);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(250, 250, 250, 0.05);
+  vertical-align: middle;
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+.player {
+  font-weight: 600;
+  color: #fafafa;
+}
+
+.matchup {
+  color: #a1a1aa;
+  font-size: 0.75rem;
+}
+
+.line {
+  font-variant-numeric: tabular-nums;
+  color: #d4d4d8;
+}
+
+.probability {
+  font-variant-numeric: tabular-nums;
+  color: #a1a1aa;
+  font-size: 0.8125rem;
+}
+
+.late {
+  margin-left: 0.4rem;
+  font-size: 0.6875rem;
+  color: #fbbf24;
+}
+
+.empty {
+  padding: 2.5rem 1rem;
+  text-align: center;
+  color: #a1a1aa;
+}

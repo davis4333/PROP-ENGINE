@@ -1,0 +1,48 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.win {
+  background: rgba(52, 211, 153, 0.14);
+  border-color: rgba(52, 211, 153, 0.4);
+  color: #6ee7b7;
+}
+
+.loss {
+  background: rgba(248, 113, 113, 0.14);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fca5a5;
+}
+
+.push {
+  background: rgba(96, 165, 250, 0.14);
+  border-color: rgba(96, 165, 250, 0.4);
+  color: #93c5fd;
+}
+
+.void {
+  background: rgba(161, 161, 170, 0.12);
+  border-color: rgba(161, 161, 170, 0.3);
+  color: #a1a1aa;
+}
+
+.noPlay {
+  background: rgba(161, 161, 170, 0.08);
+  border-color: rgba(161, 161, 170, 0.2);
+  color: #a1a1aa;
+}
+
+.pending {
+  background: transparent;
+  border-color: rgba(161, 161, 170, 0.2);
+  color: #a1a1aa;
+  font-weight: 500;
+  font-style: italic;
+}

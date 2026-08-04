@@ -1,0 +1,61 @@
+.tracker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid rgba(250, 250, 250, 0.1);
+  min-width: 5.5rem;
+}
+
+.stageName {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #d4d4d8;
+}
+
+.stageStatus {
+  font-size: 0.6875rem;
+  text-transform: capitalize;
+}
+
+.succeeded {
+  border-color: rgba(52, 211, 153, 0.4);
+  background: rgba(52, 211, 153, 0.08);
+}
+.succeeded .stageStatus {
+  color: #6ee7b7;
+}
+
+.failed {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.08);
+}
+.failed .stageStatus {
+  color: #fca5a5;
+}
+
+.running {
+  border-color: rgba(139, 92, 246, 0.4);
+  background: rgba(139, 92, 246, 0.08);
+}
+.running .stageStatus {
+  color: #c4b5fd;
+}
+
+.pending,
+.skipped {
+  border-color: rgba(250, 250, 250, 0.08);
+  opacity: 0.55;
+}
+.pending .stageStatus,
+.skipped .stageStatus {
+  color: #a1a1aa;
+}
