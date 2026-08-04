@@ -8,17 +8,16 @@ import type {
 } from "./types";
 
 /** Server Components (Today/Ledger) run inside the Next.js server process
- * and need an absolute, server-reachable URL -- API_BASE_URL (no
- * NEXT_PUBLIC_ prefix, never sent to the browser). The Admin page is a
- * Client Component and fetches from the browser, so it needs the public
- * variant instead. Both default to the engine's docker-compose port for
- * local dev. */
+ * and need an absolute, server-reachable URL to the engine -- API_BASE_URL
+ * (no NEXT_PUBLIC_ prefix, never sent to the browser). The Admin page is a
+ * Client Component; its browser-side fetches use relative `/api/...`
+ * paths instead, proxied to the engine by next.config.ts's rewrite --
+ * see that file for why (single public origin, works the same locally,
+ * in docker-compose, and on a single-port host like Replit). Both
+ * server-side and the rewrite default to the engine's docker-compose
+ * port for local dev. */
 export function serverApiBaseUrl(): string {
   return process.env.API_BASE_URL ?? "http://localhost:8000";
-}
-
-export function publicApiBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 }
 
 export class ApiError extends Error {
@@ -84,10 +83,9 @@ export function fetchProjectionHistory(
   );
 }
 
+// Client-side (Admin page) -- relative paths, proxied by next.config.ts.
 export function fetchAdminStatus(secret: string): Promise<AdminStatusResponse> {
-  return getJson(`${publicApiBaseUrl()}/api/admin/status`, {
-    "X-Admin-Secret": secret,
-  });
+  return getJson(`/api/admin/status`, { "X-Admin-Secret": secret });
 }
 
 export function triggerRun(
@@ -95,7 +93,7 @@ export function triggerRun(
   secret: string,
 ): Promise<RunActionResponse> {
   return postJson(
-    `${publicApiBaseUrl()}/api/admin/runs/${encodeURIComponent(slateDate)}/run`,
+    `/api/admin/runs/${encodeURIComponent(slateDate)}/run`,
     { "X-Admin-Secret": secret },
     {},
   );
@@ -105,12 +103,9 @@ export function triggerGrade(
   slateDate: string,
   secret: string,
 ): Promise<GradeActionResponse> {
-  return postJson(
-    `${publicApiBaseUrl()}/api/admin/runs/${encodeURIComponent(slateDate)}/grade`,
-    {
-      "X-Admin-Secret": secret,
-    },
-  );
+  return postJson(`/api/admin/runs/${encodeURIComponent(slateDate)}/grade`, {
+    "X-Admin-Secret": secret,
+  });
 }
 
 export const PIPELINE_STAGES = [

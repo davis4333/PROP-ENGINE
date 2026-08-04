@@ -32,5 +32,28 @@ services:
       postgres:
         condition: service_healthy
 
+  web:
+    build:
+      context: ./web
+    # Dev-mode override (the image's default CMD is a production build) --
+    # matches the engine service's --reload pattern, with source mounted
+    # for live reload.
+    command: pnpm run dev --port 3000
+    environment:
+      # Server Components (Today/Ledger) run inside this container and
+      # reach the engine over the compose network by service name. The
+      # Admin page's browser-side calls go through this same Next.js
+      # origin via next.config.ts's rewrite, so no separate client-facing
+      # URL/port is needed -- see lib/api.ts.
+      API_BASE_URL: http://engine:8000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./web:/app
+      - web_node_modules:/app/node_modules
+    depends_on:
+      - engine
+
 volumes:
   cassandra_pgdata:
+  web_node_modules:

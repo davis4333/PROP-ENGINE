@@ -1,0 +1,20 @@
+run = "bash scripts/replit_start.sh"
+entrypoint = "scripts/replit_start.sh"
+
+[nix]
+channel = "stable-24_05"
+
+[env]
+PYTHONUNBUFFERED = "1"
+# The engine and frontend run in the same Repl; the frontend proxies its
+# browser-side Admin calls to this same-machine engine (see
+# web/next.config.ts) -- only port 3000 needs to be publicly exposed.
+API_BASE_URL = "http://localhost:8000"
+
+[[ports]]
+localPort = 3000
+externalPort = 80
+
+[deployment]
+run = ["bash", "scripts/replit_start.sh"]
+deploymentTarget = "cloudrun"

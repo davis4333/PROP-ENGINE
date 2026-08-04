@@ -1,7 +1,20 @@
 import { defineConfig, devices } from "@playwright/test";
+import { existsSync } from "node:fs";
 
 const PORT = 3100;
 const baseURL = `http://127.0.0.1:${PORT}`;
+
+// This sandboxed dev environment ships a pre-installed Chromium at a fixed
+// path (PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 stops npm postinstall from
+// re-fetching it). Real CI (.github/workflows/ci.yml) has no such path --
+// it runs `playwright install --with-deps chromium` and Playwright finds
+// its own default-installed browser. Only override executablePath when
+// the sandboxed path actually exists, so CI isn't pointed at a binary
+// that was never installed there.
+const sandboxChromium = "/opt/pw-browsers/chromium";
+const launchOptions = existsSync(sandboxChromium)
+  ? { executablePath: sandboxChromium }
+  : {};
 
 export default defineConfig({
   testDir: "./e2e",
@@ -18,9 +31,7 @@ export default defineConfig({
       name: "chromium",
       use: {
         ...devices["Desktop Chrome"],
-        launchOptions: {
-          executablePath: "/opt/pw-browsers/chromium",
-        },
+        launchOptions,
       },
     },
   ],
