@@ -163,7 +163,7 @@ def run_slate(
 
     try:
         _stage(session, run_id, "INGEST", "running", started=True)
-        result.ingest_results = _ingest_slate(
+        result.ingest_results = ingest_slate(
             session, slate_date, cutoff_at, client, lines_drop_dir=lines_drop_dir, run_id=run_id
         )
         session.flush()
@@ -188,8 +188,21 @@ def run_slate(
             ),
         )
 
+        # ingest_slate() just wrote fresh raw_* rows stamped with real
+        # wall-clock ingested_at (ADR 0001 -- ingested_at is always "now",
+        # regardless of slate_date). If the caller's cutoff_at was
+        # computed before that ingestion ran (the common case: "give me
+        # a live run right now"), it can predate what was just written,
+        # so every row would fail its ingested_at<=cutoff as-of filter
+        # and FREEZE would silently see nothing. The effective freeze
+        # cutoff is never earlier than "now, after ingestion" -- a
+        # caller-supplied cutoff further in the future (e.g. the
+        # integration tests' deliberate buffer) is still honored as-is.
+        effective_cutoff = max(cutoff_at, datetime.now(UTC))
+        result.cutoff_at = effective_cutoff
+
         _stage(session, run_id, "FREEZE", "running", started=True)
-        snapshot, entries = build_snapshot(session, slate_date, cutoff_at)
+        snapshot, entries = build_snapshot(session, slate_date, effective_cutoff)
         session.flush()
         result.snapshot_id = snapshot.snapshot_id
         result.entries_frozen = len(entries)
@@ -201,7 +214,7 @@ def run_slate(
         result.entries_skipped_no_starter = len(entries) - len(projectable)
         model = BaselinePoissonModel()
         features_by_entry: dict[int, dict[str, Any]] = {
-            i: build_features(e, cutoff_at) for i, e in enumerate(projectable)
+            i: build_features(e, effective_cutoff) for i, e in enumerate(projectable)
         }
         session.flush()
         _stage(
@@ -259,7 +272,7 @@ def run_slate(
                 features=features_by_entry[i],
                 model_version=MODEL_VERSION,
                 decision=decision,
-                as_of=cutoff_at,
+                as_of=effective_cutoff,
                 publish=publish,
             )
             result.projections_published.append(row)
@@ -290,15 +303,21 @@ def run_slate(
     return result
 
 
-def _ingest_slate(
+def ingest_slate(
     session: Session,
     slate_date: date,
     cutoff_at: datetime,
-    client: httpx.Client,
+    client: httpx.Client | None = None,
     *,
-    lines_drop_dir: Path | None,
-    run_id: str,
+    lines_drop_dir: Path | None = None,
+    run_id: str | None = None,
 ) -> list[IngestResult]:
+    """Runs every source adapter for one slate and writes their raw rows.
+    Public (not `run_slate`-only) so it's independently callable -- e.g.
+    the CLI's `ingest` command, for pulling fresh data without also
+    freezing/projecting/publishing."""
+    client = client or httpx.Client(timeout=10.0)
+    run_id = run_id or _new_run_id()
     results: list[IngestResult] = []
 
     results.append(
@@ -323,10 +342,18 @@ def _ingest_slate(
     )
     session.flush()
 
+    # Same reasoning as run_slate()'s effective_cutoff: the probable-
+    # pitcher ingest just above wrote rows with real wall-clock
+    # ingested_at, which can be later than a cutoff_at computed before
+    # this function was called -- this lookup only needs "what did we
+    # just ingest," so it always probes at least as late as right now.
+    probe_cutoff = max(cutoff_at, datetime.now(UTC))
     games = games_for_slate_date(session, slate_date)
     probables: list[RawProbablePitcher] = []
     for game in games:
-        probables.extend(all_as_of(session, RawProbablePitcher, {"mlb_game_pk": game.mlb_game_pk}, cutoff_at))
+        probables.extend(
+            all_as_of(session, RawProbablePitcher, {"mlb_game_pk": game.mlb_game_pk}, probe_cutoff)
+        )
     player_mlb_ids = sorted({p.player_mlb_id for p in probables})
 
     results.append(

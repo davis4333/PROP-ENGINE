@@ -17,6 +17,9 @@ dependencies = [
     "tzdata",
 ]
 
+[project.scripts]
+cassandra = "cassandra.cli.main:app"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.2",
@@ -61,6 +64,8 @@ select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
 # documented, required pattern -- not the mutable-default-argument bug B008
 # exists to catch.
 "src/cassandra/api/**" = ["B008"]
+# Same story for typer's Argument()/Option() in argument defaults.
+"src/cassandra/cli/**" = ["B008"]
 
 [tool.mypy]
 python_version = "3.12"

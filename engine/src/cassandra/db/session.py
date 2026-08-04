@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -6,13 +7,22 @@ from sqlalchemy.orm import Session, sessionmaker
 from cassandra.config import settings
 
 engine = create_engine(settings.database_url, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+# expire_on_commit=False: both the CLI and callers of orchestration's
+# run_slate()/grade_slate_run() read attributes off ORM objects (e.g.
+# Projection.player_id) after session_scope()'s commit, once the session
+# is already closed -- the default expire-on-commit behavior would force
+# a lazy reload at that point and raise (no session to reload from).
+SessionLocal = sessionmaker(
+    bind=engine, autoflush=False, autocommit=False, future=True, expire_on_commit=False
+)
 
 
-def get_session() -> Generator[Session, None, None]:
-    """FastAPI dependency: one session per request, committed on success
-    and rolled back on any exception -- route/service code should never
-    need to call commit()/rollback() itself."""
+@contextmanager
+def session_scope() -> Generator[Session, None, None]:
+    """One session per call, committed on success and rolled back on any
+    exception -- the shared transaction-lifecycle used by both the
+    FastAPI dependency below and the CLI (cli/main.py), so neither route
+    nor command code needs to call commit()/rollback() itself."""
     session = SessionLocal()
     try:
         yield session
@@ -22,3 +32,9 @@ def get_session() -> Generator[Session, None, None]:
         raise
     finally:
         session.close()
+
+
+def get_session() -> Generator[Session, None, None]:
+    """FastAPI dependency wrapper around session_scope()."""
+    with session_scope() as session:
+        yield session
