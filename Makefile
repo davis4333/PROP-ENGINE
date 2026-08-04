@@ -1,7 +1,7 @@
 .PHONY: help engine-install web-install install \
         lint format format-check typecheck security guardrails \
         test-engine test-web test migrate-check db-up db-down \
-        build-web verify clean
+        build-web verify clean seed-demo
 
 ENGINE_DIR := engine
 WEB_DIR := web
@@ -20,6 +20,7 @@ help:
 	@echo "  test-engine      - pytest (engine + scripts)"
 	@echo "  test-web         - vitest + playwright (web)"
 	@echo "  migrate-check    - apply alembic migrations against DATABASE_URL"
+	@echo "  seed-demo        - run the fixture demo slate (2023-06-15) end to end"
 	@echo "  build-web        - next build"
 	@echo "  verify           - the full gate: everything above, in order"
 
@@ -76,6 +77,9 @@ db-down:
 
 migrate-check:
 	cd $(ENGINE_DIR) && .venv/bin/python -m alembic upgrade head
+
+seed-demo:
+	$(ENGINE_PY) scripts/seed_demo_slate.py
 
 # --- build -----------------------------------------------------------------
 

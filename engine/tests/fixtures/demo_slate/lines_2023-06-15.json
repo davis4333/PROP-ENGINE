@@ -1,0 +1,42 @@
+{
+  "slate_date": "2023-06-15",
+  "observed_at": "2023-06-15T15:00:00Z",
+  "lines": [
+    {
+      "mlb_game_pk": 717753,
+      "player_mlb_id": 579328,
+      "market": "pitcher_strikeouts",
+      "line": 3.5,
+      "over_price": -115,
+      "under_price": -105,
+      "is_suspended": false
+    },
+    {
+      "mlb_game_pk": 717753,
+      "player_mlb_id": 669330,
+      "market": "pitcher_strikeouts",
+      "line": 6.5,
+      "over_price": -110,
+      "under_price": -110,
+      "is_suspended": false
+    },
+    {
+      "mlb_game_pk": 717755,
+      "player_mlb_id": 605400,
+      "market": "pitcher_strikeouts",
+      "line": 9.0,
+      "over_price": -120,
+      "under_price": 100,
+      "is_suspended": false
+    },
+    {
+      "mlb_game_pk": 717755,
+      "player_mlb_id": 669194,
+      "market": "pitcher_strikeouts",
+      "line": 5.5,
+      "over_price": -105,
+      "under_price": -115,
+      "is_suspended": false
+    }
+  ]
+}
