@@ -69,7 +69,28 @@ class ProbablePitchersMLBAdapter(SourceAdapter):
                             "mlb_game_pk": game_pk,
                             "player_mlb_id": probable["id"],
                             "team_mlb_id": team_side.get("team", {}).get("id"),
-                            "is_confirmed": game.get("status", {}).get("abstractGameState") != "Preview",
+                            # A named, numeric-id probable pitcher in this
+                            # feed IS MLB's official pregame starter
+                            # listing -- the best (and, at this hydration
+                            # level, only) confirmation signal available
+                            # before first pitch. Previously this compared
+                            # the GAME's status.abstractGameState against
+                            # "Preview", which is true for essentially
+                            # every game not yet in progress -- meaning
+                            # is_confirmed was False for nearly every
+                            # pregame listing, which fed straight into
+                            # decision/engine.py's QUALITY_RISK_CODES and
+                            # silently forced every pregame projection to
+                            # NO_PLAY/UNCERTAIN regardless of edge. A real
+                            # late scratch/swap is still caught correctly
+                            # by the existing point-in-time mechanism: MLB
+                            # updates this feed, a new (later observed_at)
+                            # row supersedes this one, and
+                            # pit/snapshot_builder.py's latest_grouped_as_of
+                            # picks up whichever is current as of the
+                            # freeze cutoff -- no separate "confirmed"
+                            # flag is needed for that to work correctly.
+                            "is_confirmed": True,
                         },
                         observed_at=fetched_at,
                         payload=probable,

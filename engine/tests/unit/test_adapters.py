@@ -79,8 +79,52 @@ def test_probable_pitchers_adapter_parses_real_response():
     kikuchi = next(r for r in result.records if r.fields["player_mlb_id"] == 579328)
     assert kikuchi.fields["mlb_game_pk"] == 717753
     assert kikuchi.fields["team_mlb_id"] == 141
-    # This fixture's game already went Final -- the pitcher demonstrably started.
     assert kikuchi.fields["is_confirmed"] is True
+
+
+@respx.mock
+def test_probable_pitchers_adapter_confirms_a_genuinely_pregame_listing():
+    # Regression for a real, severe bug: is_confirmed used to compare the
+    # GAME's status.abstractGameState against "Preview", which is true
+    # for every game that hasn't started yet -- meaning a normal pregame
+    # probable-pitcher listing (the overwhelming majority of real-world
+    # calls, since this adapter runs pregame) was always marked
+    # unconfirmed. That fed straight into decision/engine.py's
+    # QUALITY_RISK_CODES and force every pregame projection to
+    # NO_PLAY/UNCERTAIN regardless of edge -- confirmed live, this
+    # silently suppressed every QUALIFIED pick since this platform went
+    # live. A named, numeric-id probable pitcher listing IS MLB's
+    # official pregame starter signal and must be usable before the game
+    # starts, not just after.
+    pregame_schedule = {
+        "dates": [
+            {
+                "games": [
+                    {
+                        "gamePk": 999888,
+                        "status": {"abstractGameState": "Preview", "detailedState": "Scheduled"},
+                        "teams": {
+                            "home": {
+                                "team": {"id": 110},
+                                "probablePitcher": {"id": 669330, "fullName": "Tyler Wells"},
+                            },
+                            "away": {
+                                "team": {"id": 141},
+                                "probablePitcher": {"id": 579328, "fullName": "Yusei Kikuchi"},
+                            },
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+    respx.get(f"{MLB_STATS_API_BASE}/schedule").mock(return_value=httpx.Response(200, json=pregame_schedule))
+
+    result = ProbablePitchersMLBAdapter(http_client=httpx.Client()).fetch(slate_date=SLATE_DATE)
+
+    assert result.is_available
+    assert len(result.records) == 2
+    assert all(r.fields["is_confirmed"] is True for r in result.records)
 
 
 # --- pitcher game logs -----------------------------------------------------
