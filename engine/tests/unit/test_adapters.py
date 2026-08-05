@@ -154,6 +154,82 @@ def test_pitcher_game_logs_adapter_no_player_ids_is_unavailable_not_raise():
     assert result.records == []
 
 
+def _thin_current_season_gamelog() -> dict:
+    # Only one valid start this season -- below FALLBACK_SEASON_MIN_STARTS
+    # (3), the scenario that should trigger a prior-season fallback fetch
+    # (a rookie call-up, a rehab return, or genuinely early season).
+    return {
+        "stats": [
+            {
+                "splits": [
+                    {
+                        "date": "2023-06-10",
+                        "game": {"gamePk": 900001},
+                        "stat": {"battersFaced": 24, "strikeOuts": 7, "numberOfPitches": 90},
+                    }
+                ]
+            }
+        ]
+    }
+
+
+def _prior_season_gamelog() -> dict:
+    return {
+        "stats": [
+            {
+                "splits": [
+                    {
+                        "date": "2022-09-20",
+                        "game": {"gamePk": 800001},
+                        "stat": {"battersFaced": 22, "strikeOuts": 6, "numberOfPitches": 88},
+                    },
+                    {
+                        "date": "2022-09-14",
+                        "game": {"gamePk": 800002},
+                        "stat": {"battersFaced": 21, "strikeOuts": 5, "numberOfPitches": 85},
+                    },
+                ]
+            }
+        ]
+    }
+
+
+@respx.mock
+def test_pitcher_game_logs_adapter_falls_back_to_prior_season_when_current_season_is_thin():
+    current = respx.get(f"{MLB_STATS_API_BASE}/people/123456/stats", params={"season": "2023"}).mock(
+        return_value=httpx.Response(200, json=_thin_current_season_gamelog())
+    )
+    prior = respx.get(f"{MLB_STATS_API_BASE}/people/123456/stats", params={"season": "2022"}).mock(
+        return_value=httpx.Response(200, json=_prior_season_gamelog())
+    )
+    result = PitcherGameLogsMLBAdapter(http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, player_mlb_ids=[123456]
+    )
+    assert current.called
+    assert prior.called
+    assert result.is_available
+    stat_dates = {r.fields["stat_date"] for r in result.records}
+    assert stat_dates == {"2023-06-10", "2022-09-20", "2022-09-14"}
+
+
+@respx.mock
+def test_pitcher_game_logs_adapter_skips_fallback_when_current_season_has_enough_starts():
+    current = respx.get(f"{MLB_STATS_API_BASE}/people/579328/stats", params={"season": "2023"}).mock(
+        return_value=httpx.Response(200, json=_load("gamelog_579328_2023.json"))
+    )
+    prior = respx.get(f"{MLB_STATS_API_BASE}/people/579328/stats", params={"season": "2022"}).mock(
+        return_value=httpx.Response(200, json=_prior_season_gamelog())
+    )
+    result = PitcherGameLogsMLBAdapter(http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, player_mlb_ids=[579328]
+    )
+    assert current.called
+    assert not prior.called
+    assert result.is_available
+    assert all(r.fields["stat_date"] < "2023-06-15" for r in result.records)
+    assert all("2022" not in r.fields["stat_date"] for r in result.records)
+
+
 # --- weather -----------------------------------------------------------------
 
 

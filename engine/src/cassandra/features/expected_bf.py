@@ -12,13 +12,17 @@ Fallback chain actually implemented in this MVP:
    valid starts exist this season.
 
 ADR 0004 also specifies a third tier -- career average for pitchers in a
-similar role -- ahead of the league default. That tier is **not
-implemented**: it would need multi-season game-log history, and this
-MVP's `PitcherGameLogsMLBAdapter` only fetches the current season (see
-CURRENT_STATE_AUDIT.md). Falling through straight to `league_default`
-when season data is too thin is an honest simplification, not a silent
-gap -- `tier` is always recorded on the result and surfaced in the
-feature blob.
+similar role -- ahead of the league default. That specific tier (role-
+similarity clustering) is **not implemented**. What is implemented:
+`PitcherGameLogsMLBAdapter` falls back to the prior season's game logs
+when the current season has fewer than its own `FALLBACK_SEASON_MIN_STARTS`
+valid starts (early season, an injury/rehab return, a mid-season call-up),
+so this module still only ever sees one already-merged, cutoff-filtered
+list -- it has no notion of which season a given start came from, and
+doesn't need one. Falling through to `league_default` only happens when
+there's truly no usable history in either season (see
+CURRENT_STATE_AUDIT.md) -- `tier` is always recorded on the result and
+surfaced in the feature blob, never a silent gap.
 """
 
 from __future__ import annotations
