@@ -21,5 +21,7 @@ baseline," never "implied probability."
 
 ## Status
 
-Not yet implemented — Phase 1 (Foundation) only. Recorded as a constraint
-on Phase 3's `decision/engine.py` and any related API/UI copy.
+Implemented. `decision/engine.py` computes `edge_over = probability_over
+- 0.5` exactly as specified, and the neutral-baseline wording rule holds
+across code comments, API field descriptions, and UI copy — verified by
+an independent architecture review.

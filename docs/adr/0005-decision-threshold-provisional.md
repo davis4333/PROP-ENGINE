@@ -20,4 +20,9 @@ before any projection is treated as a live public recommendation.
 
 ## Status
 
-Not yet implemented — Phase 1 (Foundation) only.
+The mechanism is implemented (`config.py`'s `decision_edge_threshold`,
+used in `decision/engine.py`) — verified by an independent architecture
+review. The *value* (`0.05`) remains exactly what this ADR calls it: an
+arbitrary placeholder, not calibrated or business-approved. Implementing
+the gate did not resolve the open item; Tyler's real threshold/
+calibration decision is still pending.

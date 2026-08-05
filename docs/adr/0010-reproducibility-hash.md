@@ -1,6 +1,6 @@
 # ADR 0010 — Deterministic reproducibility hash on every projection
 
-**Status:** Decided (schema in Phase 1; computation in Phase 3)
+**Status:** Decided and fully implemented
 
 ## Decision
 
@@ -33,7 +33,7 @@ signal worth surfacing in the admin view.
 ## Status
 
 Columns (`reproducibility_hash`, `decision_policy_version`,
-`git_commit_sha`) added to the `projections` table in Phase 1
-(`db/models/projection.py`). The actual hash computation lives in the
-Phase 3 ledger-writing code (`ledger/service.py`), once there are real
-snapshots/features/models to hash.
+`git_commit_sha`) are on the `projections` table
+(`db/models/projection.py`), and `ledger/service.py` computes and sets
+the hash (via `decision/engine.py`'s `reproducibility_hash()`) on every
+publish — verified by an independent architecture review.

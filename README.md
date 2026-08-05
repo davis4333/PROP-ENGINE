@@ -218,7 +218,8 @@ engine/                     Python (FastAPI + SQLAlchemy + Alembic)
     db/                       models, Alembic migrations, session
     adapters/                  SourceAdapter implementations (schedule, probable
                                  pitchers, game logs, weather, park factors, umpire
-                                 stub, lines-manual, final box scores)
+                                 stub, lines-manual, lines-odds-api (real vendor,
+                                 The Odds API), final box scores)
     ingestion/                  generic ingest + data-quality gate
     pit/                         point-in-time as-of primitives + snapshot builder
     features/, models/, decision/  feature engineering, baseline Poisson model,

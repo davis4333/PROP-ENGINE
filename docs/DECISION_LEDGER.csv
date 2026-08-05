@@ -5,6 +5,7 @@ CONFIRMED,Primary objective,"Build the most accurate and trustworthy player-prop
 CONFIRMED,Initial sport,MLB only until the system is proven and operationally reliable.,Prior Cassandra conversations summarized in project history
 CONFIRMED,Initial market,"Pitcher strikeouts first; perfect one vertical before adding total bases, RBIs, and other markets.",Prior Cassandra conversations summarized in project history
 CONFIRMED,Primary book/feed,Underdog is the intended first public line source and the book Tyler expects to use.,Prior Cassandra conversations summarized in project history
+CONFIRMED,Interim live line vendor,"The Odds API (regulated-sportsbook lines, e.g. DraftKings) is the real vendor actually live in production while the Underdog acquisition method stays unresolved below. Not Underdog, not a resolution of that row -- see ADR 0014.",Live production deployment; ADR 0014
 CONFIRMED,Transparency,"Log every evaluated projection before first pitch, not only winning picks or recommended plays.",Prior Cassandra conversations summarized in project history
 CONFIRMED,Grades,"Use win, loss, push, void, and no-play outcomes; never delete losses.",Prior Cassandra conversations summarized in project history
 CONFIRMED,No forced action,Sometimes the correct decision is No Play. The system must not manufacture daily picks.,Prior Cassandra conversations summarized in project history
@@ -23,7 +24,7 @@ UNRESOLVED,Payout-specific decision math,Finalize payout structures and break-ev
 UNRESOLVED,Public confidence display,"Decide whether public users see probabilities, confidence tiers, edge ranges, or only simplified reasoning.",Requires explicit owner decision
 UNRESOLVED,Which projections are public,Decide whether all raw projections remain free forever or whether some analysis becomes premium after proof.,Requires explicit owner decision
 UNRESOLVED,Initial authentication,"Determine whether pre-launch public pages are anonymous and admin is private, or whether user accounts launch immediately.",Requires explicit owner decision
-UNRESOLVED,Hosting,"Choose between Replit for speed and a more conventional cloud stack after evaluating reliability, cost, scheduling, databases and observability.",Requires explicit owner decision
+CONFIRMED,Hosting,"Replit Reserved VM Deployment (cassandrahits.replit.app), external Postgres (Replit has no managed DB). Decided in practice via a live deployment rather than a discrete evaluation step -- see ADR 0015 for what was actually learned (reliability/observability limits, single-instance scheduler constraint, environment-specific fixes needed) and its Revisit-when condition.",Live production deployment; ADR 0015
 UNRESOLVED,Model family,"Establish baseline and compare interpretable statistical models, gradient boosting and other candidates; do not preselect the winner.",Requires explicit owner decision
 UNRESOLVED,Minimum evidence before monetization,"Define sample size, calibration quality and live evaluation thresholds required before charging.",Requires explicit owner decision
 UNRESOLVED,Public posting cadence,Define exact timing and whether X posts are automatic or require human approval.,Requires explicit owner decision

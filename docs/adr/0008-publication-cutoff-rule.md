@@ -1,6 +1,6 @@
 # ADR 0008 — Official publication cutoff rule
 
-**Status:** Decided (design constraint for Phase 4, not yet implemented)
+**Status:** Decided and implemented (`ledger/service.py`)
 
 ## Decision
 
@@ -26,6 +26,9 @@ the public track record after the fact.
 
 ## Status
 
-Schema field (`is_late_publication`) added in Phase 1. The actual
-cutoff-enforcement logic belongs in the Phase 4 publish endpoint/ledger
-service — not yet implemented.
+Implemented. `ledger/service.py`'s `publish_projection` computes and
+sets `is_late_publication` on every publish (not just a schema field) —
+verified by an independent architecture review. The precise cutoff still
+uses `scheduled_start_utc` as this ADR names as the interim definition;
+Tyler's more precise operational cutoff (e.g. "X minutes before first
+pitch") remains open.

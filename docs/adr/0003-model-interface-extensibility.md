@@ -1,6 +1,6 @@
 # ADR 0003 — Model interface must support more than Poisson
 
-**Status:** Decided (design constraint for Phase 3, not yet implemented)
+**Status:** Decided and implemented (`models/interface.py`, `models/baseline.py`)
 
 ## Decision
 
@@ -33,6 +33,10 @@ one this interface will ever support.
 
 ## Status
 
-Not yet implemented — this is Phase 1 (Foundation) only. Recorded now so
-the Phase 3 implementation doesn't accidentally hardcode Poisson into
-`decision/engine.py` or the ledger schema.
+Implemented. `models/interface.py` defines `StrikeoutModel`/
+`StrikeoutDistribution` per the sketch above; `models/baseline.py`
+implements `k-model-0.1.0` (Poisson) against it; `decision/engine.py`
+only ever calls the interface, never a concrete distribution family —
+verified by an independent architecture review. This ADR's constraint
+held; no negative-binomial/simulation-based model exists yet, but
+nothing downstream would need to change to add one.

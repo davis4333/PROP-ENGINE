@@ -25,7 +25,8 @@
 
 ## Status
 
-`config.py`'s `OPERATING_TIMEZONE` setting and `slate_date_for()` helper
-are built in Phase 1. Nothing in Phase 1 yet computes a real slate_date
-from live data (no schedule adapter exists yet), but the DB schema and
-config are already timezone-correct so this doesn't need revisiting later.
+Fully implemented and in active use. `config.py`'s `OPERATING_TIMEZONE`
+setting and `slate_date_for()` helper are used against real MLB schedule
+data (via `adapters/schedule_mlb.py`) in `pit/snapshot_builder.py` —
+verified by an independent architecture review. `slate_date_for()`
+remains the single source of truth; nothing else re-derives it.

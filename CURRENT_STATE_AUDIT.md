@@ -69,7 +69,18 @@ against real (not mocked) data during this build.
   totals, a different but legitimate market. Runs *instead of* the
   manual adapter, never alongside it, specifically to avoid two sources
   disagreeing and tripping `check_line_conflict`'s DATA_CONFLICT finding
-  on the same pitcher/game/market.
+  on the same pitcher/game/market. Two real bugs found by a live
+  multi-agent review (adversarial point-in-time audit + security review)
+  are fixed and covered by regression tests: (1) two confirmed starters
+  sharing an identical vendor-reported name previously collided silently
+  in a plain dict, letting a real line get attached to the wrong
+  `player_mlb_id`/`mlb_game_pk` with no warning — now detected up front
+  and deliberately dropped (never guessed at) with an explicit warning;
+  (2) `httpx.HTTPStatusError`'s own `str()` embeds the full request URL
+  including the API key query parameter — warnings are now built from
+  the status code/exception type only, never the raw exception string,
+  since warnings flow into the append-only `audit_events` table, admin
+  API responses, and deploy logs.
 - Generic ingestion service + data-quality gate (stale/missing/conflict/
   market-incomplete checks), with source health tracking and an
   append-only audit trail.
@@ -155,6 +166,24 @@ against real (not mocked) data during this build.
   scheduler never starts during tests regardless of the settings flag.
   10 unit tests cover the gating logic and failure isolation with the
   orchestration calls mocked out (no real DB/network in the test).
+  Reconciles its once-per-day trigger against the DB
+  (`_run_slate_already_succeeded_today`) on the first tick after a
+  restart, so a redeploy doesn't blindly re-trigger a real run_slate()
+  (and re-burn real, metered Odds API credits) if today's already
+  succeeded.
+- Admin's "Blocking Issues" panel (`api/routers/admin.py`) excludes
+  `umpire_stub` (a permanent stand-in, always unavailable by design —
+  see Provisional below) from ever being flagged as blocking; found live
+  as a standing false alarm nobody could resolve, fixed with a
+  regression test. **Not yet resolved, flagging rather than silently
+  deciding:** `mlb_stats_api_final_box_scores` also shows as "failed"
+  repeatedly on a live deployment before games go Final — expected
+  behavior (the scheduler's `grade_slate_run()` re-attempts it every 15
+  minutes, and box scores genuinely aren't available until a game
+  finishes), not a bug, but it's currently indistinguishable from a real
+  problem in the Admin UI. Whether this needs the same "never blocking"
+  treatment, a smarter time-aware threshold, or is fine as-is is a real
+  product call, not an engineering one.
 
 ### Fixture demo slate
 
@@ -183,14 +212,17 @@ against real (not mocked) data during this build.
 
 ### Tests, tooling, CI
 
-- 166 engine + scripts tests (unit, integration, API, the point-in-time
-  leakage suite) — all passing on a freshly rebuilt database.
+- 204 engine + scripts tests (181 engine: unit, integration, API, the
+  point-in-time leakage suite; 23 guardrails regression tests) — all
+  passing on a freshly rebuilt database. (This count grows with the
+  platform; verify against `make test-engine`/CI rather than treating
+  this number as pinned.)
 - Frontend: 15 Vitest component tests, 7 Playwright + axe accessibility
   tests, `next build` succeeds.
 - `make verify` (lint, format-check, typecheck, `bandit` + `pip-audit`,
   `scripts/guardrails.py`, migrations-from-empty, the full test suite,
   frontend gate, build) passes clean end to end.
-- `scripts/guardrails.py`: 21 regression tests, wired into CI and a
+- `scripts/guardrails.py`: 23 regression tests, wired into CI and a
   Claude Code PreToolUse hook.
 - CI (`.github/workflows/ci.yml`): engine job + web job, matching `make
   verify`'s checks.
@@ -235,7 +267,15 @@ to invent missing product decisions:
   no opponent-lineup-contact-rate adapter exists yet; the feature field
   is kept explicit (not omitted) as a documented seam.
 - **Admin auth**: a demo-only shared-secret header (ADR 0011), not
-  production authentication.
+  production authentication. ADR 0011's own stated trigger for
+  replacement ("must be replaced before any real deployment") has now
+  been met — the admin routes are genuinely publicly reachable on the
+  live deployment. Hardened, not replaced, after a live security review:
+  `hmac.compare_digest` instead of `!=` (closes a timing side-channel),
+  and a basic in-memory failed-attempt lockout (10 failures locks out an
+  IP for 5 minutes) since there was previously no rate limiting at all
+  over what may be a weak/guessable secret. A floor under the placeholder,
+  not a fix for it being a placeholder — real auth is still unbuilt.
 - **Admin actions**: only `run` and `grade` are implemented. ADR 0007
   describes a richer revalidate/regenerate/publish state-guard split;
   that ADR's own status note marks it "Not yet implemented," deferred

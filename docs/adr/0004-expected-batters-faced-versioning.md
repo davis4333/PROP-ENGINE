@@ -1,6 +1,6 @@
 # ADR 0004 — Expected batters faced: versioned, separate module, explicit fallback
 
-**Status:** Decided (design constraint for Phase 3, not yet implemented)
+**Status:** Decided and implemented (`features/expected_bf.py`)
 
 ## Decision
 
@@ -28,5 +28,7 @@ visible in the feature record which tier fired, not just the final number.
 
 ## Status
 
-Not yet implemented — Phase 1 (Foundation) only. Recorded now as a
-constraint on the Phase 3 `features/` implementation.
+Implemented. `features/expected_bf.py` implements the fallback chain
+above with `expected_bf_version`/`expected_bf_tier` fields, referenced
+by `features/registry.py` — verified by an independent architecture
+review.

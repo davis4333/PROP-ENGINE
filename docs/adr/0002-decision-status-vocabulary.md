@@ -27,9 +27,9 @@ the API or UI:
    evaluated set. Still an internal/computed tier, not necessarily shown
    publicly yet.
 3. **Published** — rows with a non-null `published_at` that have passed
-   the publication cutoff rule (ADR 0006). This is the actual public
+   the publication cutoff rule (ADR 0008). This is the actual public
    record. A row can be QUALIFIED and never published (e.g. human
-   approval pending, or it arrived too late — see ADR 0006).
+   approval pending, or it arrived too late — see ADR 0008).
 
 The Today page must show the evaluated set (transparency), clearly marking
 which subset is qualified and which subset is actually published. Ledger

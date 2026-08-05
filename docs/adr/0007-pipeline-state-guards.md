@@ -1,6 +1,6 @@
 # ADR 0007 — Pipeline action state guards
 
-**Status:** Decided (design constraint for Phase 4, not yet implemented)
+**Status:** Decided (partially implemented — see below, not stale)
 
 ## Decision
 
@@ -28,7 +28,14 @@ functions directly:
 
 ## Status
 
-Not yet implemented — Phase 1 (Foundation) only, since the admin action
-endpoints themselves are Phase 4 work. The `pipeline_run_stages` schema is
-built now specifically so these guards have something authoritative to
-check against later.
+Partially implemented, accurately reflected in `api/routers/admin.py`'s
+own docstring (which this ADR's status line should have been kept in
+sync with). The admin action endpoints now exist
+(`POST /api/admin/runs/{slate_date}/{run,grade}`), mapping directly to
+what `orchestration/run_slate.py` actually has — but only `run` (the
+full INGEST→PUBLISH chain, one atomic call) and `grade`, not the richer
+`revalidate`/`regenerate`/`publish` split with the specific per-action
+guards this ADR describes. The `pipeline_run_stages` schema this ADR
+called for is built and populated by every real run, so those guards
+have something authoritative to check against whenever the fuller
+action split is built.
