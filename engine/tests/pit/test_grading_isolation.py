@@ -17,6 +17,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 import cassandra.features.builders as features_builders
 import cassandra.grading.service as grading_service
 import cassandra.models.baseline as models_baseline
+import cassandra.orchestration.run_slate as orchestration_run_slate
 import cassandra.pit.asof as pit_asof
 from cassandra.db.models.raw import RawFinalBoxScore
 from cassandra.db.models.sources import Source
@@ -51,6 +52,18 @@ def test_grading_service_is_the_only_reader_of_final_box_scores():
     """The flip side of the above: grading/ is where RawFinalBoxScore
     usage is expected and legitimate."""
     assert "RawFinalBoxScore" in _referenced_names(grading_service)
+
+
+def test_orchestration_run_slate_never_references_final_box_scores():
+    """Regression for a real gap an adversarial point-in-time audit
+    found: orchestration/run_slate.py sits directly upstream of/adjacent
+    to features/models/decision in the same pipeline module, but this
+    isolation suite never scanned it. It legitimately imports
+    FinalBoxScoresMLBAdapter (a different name -- the adapter class,
+    which only ever writes the raw table) and calls into
+    grading.service.grade_slate() for the actual read; it must never
+    reference the raw model itself directly."""
+    assert "RawFinalBoxScore" not in _referenced_names(orchestration_run_slate)
 
 
 def test_grading_refuses_a_final_box_score_whose_own_status_field_is_not_final(db_session):

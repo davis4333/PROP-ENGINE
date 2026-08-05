@@ -110,6 +110,21 @@ def test_box_score_referenced_in_grading_is_allowed():
     assert "no-box-score-in-features-or-models" not in _checks(path)
 
 
+def test_box_score_referenced_in_orchestration_is_blocked():
+    # Regression: an adversarial point-in-time audit found orchestration/
+    # wasn't scanned by this check at all -- run_slate.py sits directly
+    # upstream of/adjacent to features/models/decision in the same
+    # module, so a future accidental RawFinalBoxScore reference there
+    # (e.g. "just check game status inline" instead of delegating to
+    # grading.service) would have gone uncaught.
+    path = _write(
+        "orchestration/leaky.py",
+        "from cassandra.db.models.raw import RawFinalBoxScore\n\ndef leak():\n    return RawFinalBoxScore\n",
+    )
+    checks = _checks(path)
+    assert "no-box-score-in-features-or-models" in checks
+
+
 def test_bare_skip_marker_is_blocked():
     # checked path must be under a "/tests/" directory for the check to apply
     path = REPO_ROOT / "engine" / "tests" / "unit" / "_guardrail_fixture_bare_skip.py"
