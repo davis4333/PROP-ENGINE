@@ -37,11 +37,29 @@ against real (not mocked) data during this build.
 
 ### Ingestion
 
-- 8 source adapters, all tested against real saved API responses (not
+- 9 source adapters, all tested against real saved API responses (not
   synthetic fixtures): MLB schedule, probable pitchers, pitcher game
   logs, Open-Meteo weather, static park factors, a permanent umpire
   stub (`is_available=False` — see Provisional below), a manual/fixture
-  lines importer, and MLB final box scores.
+  lines importer, a real licensed-odds-vendor lines adapter, and MLB
+  final box scores.
+- `adapters/lines_odds_api.py`: a real, licensed odds vendor (The Odds
+  API — regulated US sportsbooks: FanDuel, Bovada, etc.), used for
+  pitcher-strikeout lines when `ODDS_API_KEY` is configured
+  (`orchestration/run_slate.py`'s `_ingest_lines()` falls back to
+  `lines_manual` otherwise). Resolves the vendor's free-text player names
+  against that slate's already-ingested confirmed starters (real
+  `player_mlb_id`s via the `players` table) — a name with no match is
+  silently skipped, never guessed at, matching every other adapter's
+  "absence is a first-class outcome" contract. Filters events to the
+  slate's date window before requesting per-event odds (a metered call)
+  to avoid burning API credits on games outside the slate. Tested against
+  real captured responses (`tests/fixtures/odds_api/`) with respx, plus a
+  full `run_slate()` integration test proving the branch actually gets
+  used when configured. **This is NOT Underdog's own DFS pick'em
+  lines** — Underdog has no public/authorized API (see Provisional
+  below); these are real regulated-sportsbook strikeout totals, a
+  different but legitimate market.
 - Generic ingestion service + data-quality gate (stale/missing/conflict/
   market-incomplete checks), with source health tracking and an
   append-only audit trail.
@@ -176,9 +194,19 @@ to invent missing product decisions:
 - **Umpire data**: permanent stub, always `is_available=False` — no
   reliable free source exists. Never blocks a decision (a deliberate
   WARN, excluded from `QUALITY_RISK_CODES`).
-- **Underdog lines**: a manual/fixture drop-folder importer, not a real
-  Underdog integration — Underdog's real acquisition method/ToS is
-  legally unresolved per the handbook; scraping was explicitly avoided.
+- **Underdog lines**: still no real Underdog integration, and Underdog's
+  real acquisition method/ToS remains legally unresolved per the
+  handbook — Underdog's own internal (undocumented, unauthorized) API was
+  explicitly considered and rejected during this build; using it would be
+  scraping in substance. Two real line sources exist instead:
+  `adapters/lines_manual.py` (drop-folder, always available) and
+  `adapters/lines_odds_api.py` (a real licensed vendor, The Odds API,
+  when `ODDS_API_KEY` is set) — but the latter is regulated-sportsbook
+  strikeout totals, not Underdog's own DFS pick'em lines. Getting actual
+  Underdog data requires either a real partner/affiliate relationship
+  with Underdog or continuing on sportsbook-vendor lines as a legitimate
+  (if different) product direction — a business decision, not an
+  engineering one.
 - **Official paid MLB data**: free MLB Stats API used instead — no paid
   vendor integration exists.
 - **Park factors**: a small static/seeded table

@@ -1,0 +1,18 @@
+[
+  {
+    "id": "fe0d956203b65ef42f68a6d324f8b922",
+    "sport_key": "baseball_mlb",
+    "sport_title": "MLB",
+    "commence_time": "2026-08-05T22:36:00Z",
+    "home_team": "Baltimore Orioles",
+    "away_team": "Los Angeles Angels"
+  },
+  {
+    "id": "2da70aefb8ce542046f6790787c32469",
+    "sport_key": "baseball_mlb",
+    "sport_title": "MLB",
+    "commence_time": "2026-08-05T23:06:00Z",
+    "home_team": "New York Yankees",
+    "away_team": "St. Louis Cardinals"
+  }
+]

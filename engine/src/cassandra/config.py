@@ -66,6 +66,15 @@ class Settings(BaseSettings):
     # docstring for why the two have different cadences.
     auto_run_hour_local: int = 7
 
+    # adapters/lines_odds_api.py -- a real, licensed odds vendor (The Odds
+    # API), used in place of adapters/lines_manual.py's manual drop-folder
+    # stand-in when configured. NOT Underdog's own DFS pick'em lines --
+    # real regulated-sportsbook strikeout totals (see the adapter's
+    # docstring and CURRENT_STATE_AUDIT.md's Provisional section).
+    # None (unset) means "use the manual/fixture adapter instead" --
+    # orchestration/run_slate.py's _ingest_lines() branches on this.
+    odds_api_key: str | None = None
+
     # ADR 0010 -- baked in at deploy time (e.g. Replit build step) when
     # there's no .git directory to introspect; falls back to `git
     # rev-parse HEAD` for local/dev runs. See get_git_commit_sha().

@@ -34,16 +34,18 @@ from sqlalchemy.orm import Session
 
 from cassandra.adapters.final_box_scores_mlb import FinalBoxScoresMLBAdapter
 from cassandra.adapters.lines_manual import LinesManualAdapter
+from cassandra.adapters.lines_odds_api import LinesOddsApiAdapter
 from cassandra.adapters.park_factors_static import ParkFactorsStaticAdapter
 from cassandra.adapters.pitcher_game_logs_mlb import PitcherGameLogsMLBAdapter
 from cassandra.adapters.probable_pitchers_mlb import ProbablePitchersMLBAdapter
 from cassandra.adapters.schedule_mlb import ScheduleMLBAdapter
 from cassandra.adapters.umpire_stub import UmpireStubAdapter
 from cassandra.adapters.weather_openmeteo import WeatherOpenMeteoAdapter
+from cassandra.config import settings
 from cassandra.db.models.audit import AuditEvent
 from cassandra.db.models.features import FeatureSet, FeatureValue
 from cassandra.db.models.grading import Grade
-from cassandra.db.models.identity import Game, Venue
+from cassandra.db.models.identity import Game, Player, Venue
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
 from cassandra.db.models.projection import Projection
 from cassandra.db.models.raw import RawProbablePitcher
@@ -410,17 +412,56 @@ def ingest_slate(
         ingest(session, UmpireStubAdapter(), slate_date=slate_date, as_of=cutoff_at, run_id=run_id)
     )
 
-    results.append(
-        ingest(
+    results.append(_ingest_lines(session, slate_date, cutoff_at, client, probables, lines_drop_dir, run_id))
+
+    return results
+
+
+def _ingest_lines(
+    session: Session,
+    slate_date: date,
+    cutoff_at: datetime,
+    client: httpx.Client,
+    probables: list[RawProbablePitcher],
+    lines_drop_dir: Path | None,
+    run_id: str,
+) -> IngestResult:
+    """Real odds vendor when configured (settings.odds_api_key -- see
+    adapters/lines_odds_api.py), else the manual/fixture drop-folder
+    stand-in (adapters/lines_manual.py). Same output contract either way,
+    so nothing downstream cares which one ran."""
+    if not settings.odds_api_key:
+        return ingest(
             session,
             LinesManualAdapter(drop_dir=lines_drop_dir),
             slate_date=slate_date,
             as_of=cutoff_at,
             run_id=run_id,
         )
-    )
 
-    return results
+    player_mlb_ids = sorted({p.player_mlb_id for p in probables})
+    names_by_mlb_id: dict[int, str] = {}
+    if player_mlb_ids:
+        rows = session.execute(select(Player).where(Player.mlb_person_id.in_(player_mlb_ids))).scalars()
+        names_by_mlb_id = {r.mlb_person_id: r.full_name for r in rows if r.mlb_person_id is not None}
+
+    probables_context = [
+        {
+            "player_mlb_id": p.player_mlb_id,
+            "mlb_game_pk": p.mlb_game_pk,
+            "full_name": names_by_mlb_id[p.player_mlb_id],
+        }
+        for p in probables
+        if p.player_mlb_id in names_by_mlb_id
+    ]
+    return ingest(
+        session,
+        LinesOddsApiAdapter(api_key=settings.odds_api_key, http_client=client),
+        slate_date=slate_date,
+        as_of=cutoff_at,
+        run_id=run_id,
+        probables=probables_context,
+    )
 
 
 def _venues_for_games(session: Session, games: list[Game]) -> list[Venue]:

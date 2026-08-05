@@ -17,8 +17,11 @@ import httpx
 import respx
 
 from cassandra.adapters.final_box_scores_mlb import LIVE_FEED_BASE
+from cassandra.adapters.lines_odds_api import API_BASE as ODDS_API_BASE
+from cassandra.adapters.lines_odds_api import EVENTS_URL as ODDS_EVENTS_URL
 from cassandra.adapters.schedule_mlb import MLB_STATS_API_BASE
 from cassandra.adapters.weather_openmeteo import ARCHIVE_URL
+from cassandra.config import settings
 from cassandra.db.models.pipeline import PipelineRunStage
 from cassandra.identity_ids import mlb_player_id
 from cassandra.orchestration.run_slate import grade_slate_run, run_slate
@@ -162,3 +165,102 @@ def test_run_slate_then_grade_slate_end_to_end(db_session, tmp_path: Path):
         .one()
     )
     assert grade_stage.status == "succeeded"
+
+
+@respx.mock
+def test_run_slate_uses_odds_api_lines_when_configured(db_session, monkeypatch):
+    """When settings.odds_api_key is set, ingest_slate()'s _ingest_lines()
+    must call the real vendor adapter (resolving each confirmed starter's
+    real full_name from the players table it just upserted) instead of
+    the manual/fixture adapter -- no lines_drop_dir is supplied at all
+    here, so a passing test proves the odds-API branch actually ran.
+
+    The Odds API's public events endpoint only ever returns
+    current/upcoming games (no historical archive on this tier), so
+    unlike the MLB Stats API fixtures above, this event/odds payload is a
+    hand-built, schema-accurate stand-in (matching the real shape
+    captured in tests/fixtures/odds_api/ for the adapter's own unit
+    tests) rather than a captured historical response.
+    """
+    monkeypatch.setattr(settings, "odds_api_key", "test-key")
+
+    respx.get(f"{MLB_STATS_API_BASE}/schedule").mock(
+        return_value=httpx.Response(200, json=_load("schedule_2023-06-15.json"))
+    )
+    respx.route(url__regex=rf"{re.escape(MLB_STATS_API_BASE)}/people/\d+/stats").mock(
+        side_effect=_gamelog_side_effect
+    )
+    respx.get(ARCHIVE_URL).mock(return_value=httpx.Response(200, json=_load("weather_archive_camden.json")))
+    respx.route(url__regex=rf"{re.escape(LIVE_FEED_BASE)}/game/\d+/feed/live").mock(
+        side_effect=_feed_side_effect
+    )
+
+    respx.get(ODDS_EVENTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "test_event_1",
+                    "sport_key": "baseball_mlb",
+                    "sport_title": "MLB",
+                    "commence_time": "2023-06-15T17:05:00Z",
+                    "home_team": "Baltimore Orioles",
+                    "away_team": "Toronto Blue Jays",
+                }
+            ],
+        )
+    )
+    respx.get(f"{ODDS_API_BASE}/events/test_event_1/odds").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "test_event_1",
+                "sport_key": "baseball_mlb",
+                "commence_time": "2023-06-15T17:05:00Z",
+                "home_team": "Baltimore Orioles",
+                "away_team": "Toronto Blue Jays",
+                "bookmakers": [
+                    {
+                        "key": "fanduel",
+                        "title": "FanDuel",
+                        "markets": [
+                            {
+                                "key": "pitcher_strikeouts",
+                                "last_update": "2023-06-15T16:00:00Z",
+                                "outcomes": [
+                                    {
+                                        "name": "Over",
+                                        "description": "Yusei Kikuchi",
+                                        "price": -110,
+                                        "point": 6.5,
+                                    },
+                                    {
+                                        "name": "Under",
+                                        "description": "Yusei Kikuchi",
+                                        "price": -110,
+                                        "point": 6.5,
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
+
+    cutoff_at = datetime.now(UTC) + timedelta(minutes=2)
+    run_result = run_slate(db_session, SLATE_DATE, cutoff_at, http_client=httpx.Client(), publish=True)
+    db_session.flush()
+
+    kikuchi_id = mlb_player_id(KIKUCHI_MLB_ID)
+    kikuchi_proj = next(p for p in run_result.projections_published if p.player_id == kikuchi_id)
+    assert kikuchi_proj.line == 6.5
+    assert kikuchi_proj.decision_status in ("QUALIFIED", "UNCERTAIN")
+
+    # every other confirmed starter has no real Odds API prop in this
+    # fixture -- honestly NO_PLAY/REJECTED, exactly like the manual-
+    # adapter path when a pitcher has no line.
+    no_line_projs = [p for p in run_result.projections_published if p.player_id != kikuchi_id]
+    assert no_line_projs
+    assert all(p.decision == "NO_PLAY" and p.line is None for p in no_line_projs)

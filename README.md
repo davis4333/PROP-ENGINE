@@ -143,6 +143,13 @@ and take under a minute to set up.
      page; see ADR 0011 — it's explicitly not production-grade auth).
    - Optionally `DECISION_EDGE_THRESHOLD` / `OPERATING_TIMEZONE` to
      override the defaults in `.env.example`.
+   - Optionally `ODDS_API_KEY` — a real key from
+     [the-odds-api.com](https://the-odds-api.com) switches lines from the
+     manual/fixture drop-folder to real regulated-sportsbook pitcher-
+     strikeout totals (`adapters/lines_odds_api.py`). This is **not**
+     Underdog's own DFS pick'em lines — Underdog has no public API; see
+     `CURRENT_STATE_AUDIT.md`'s Provisional section. Never commit a real
+     key anywhere in the repo — Secrets only.
 4. **Click Run.** `scripts/replit_start.sh` installs both the engine and
    frontend dependencies, applies migrations, starts the engine API on
    `:8000`, and starts the frontend on `:3000` (the one port Replit
