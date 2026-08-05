@@ -260,3 +260,52 @@ def test_healthy_quota_produces_no_warning():
     )
 
     assert not any("quota" in w.lower() for w in result.warnings)
+
+
+@respx.mock
+def test_same_name_collision_is_never_attached_to_either_player():
+    # Regression for a real bug found by an adversarial point-in-time
+    # audit: two different confirmed starters sharing an exact full_name
+    # previously let the second one silently overwrite the first in a
+    # plain dict, so a real line could get attached to the WRONG
+    # player_mlb_id/mlb_game_pk with no warning at all. A bare vendor
+    # name string can't disambiguate them, so neither should get the line.
+    _mock_events()
+    respx.get(f"{API_BASE}/events/{ORIOLES_ANGELS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=_load("event_odds_no_props_yet.json"))
+    )
+    respx.get(f"{API_BASE}/events/{YANKEES_CARDINALS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=_load("event_odds_with_props.json"))
+    )
+    probables = [
+        {"player_mlb_id": 111, "mlb_game_pk": 999888, "full_name": "Andre Pallante"},
+        {"player_mlb_id": 999, "mlb_game_pk": 111222, "full_name": "Andre Pallante"},  # collision
+    ]
+
+    result = LinesOddsApiAdapter(api_key="test-key", http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, probables=probables
+    )
+
+    assert not any(r.fields["player_mlb_id"] in (111, 999) for r in result.records)
+    assert any("Ambiguous" in w and "Andre Pallante" in w for w in result.warnings)
+
+
+@respx.mock
+def test_events_http_error_never_leaks_the_api_key_into_a_warning():
+    # Regression for a real finding from a security review: httpx.HTTPStatusError's
+    # own str() embeds the full request URL, including the apiKey query
+    # param -- warnings must never be built from str(exc) directly, since
+    # they flow into the audit_events table, admin API responses, and
+    # CLI/deploy logs.
+    respx.get(EVENTS_URL).mock(return_value=httpx.Response(401, json={"message": "Invalid API key"}))
+    probables = [{"player_mlb_id": 111, "mlb_game_pk": 999888, "full_name": "Andre Pallante"}]
+    fake_key_value_for_this_test_only = "test-key"
+
+    result = LinesOddsApiAdapter(
+        api_key=fake_key_value_for_this_test_only, http_client=httpx.Client()
+    ).fetch(slate_date=SLATE_DATE, probables=probables)
+
+    assert result.is_available is False
+    assert not any(fake_key_value_for_this_test_only in w for w in result.warnings)
+    assert not any("apiKey" in w for w in result.warnings)
+    assert any("401" in w for w in result.warnings)

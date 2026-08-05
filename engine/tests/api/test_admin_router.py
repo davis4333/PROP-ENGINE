@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from cassandra.api import deps
 from cassandra.config import settings
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
 from cassandra.db.models.sources import Source, SourceHealth
@@ -100,3 +101,29 @@ def test_umpire_stub_never_appears_as_a_blocking_issue(client, db_session):
 def test_admin_run_actions_require_auth(client):
     assert client.post("/api/admin/runs/2023-06-15/run").status_code == 401
     assert client.post("/api/admin/runs/2023-06-15/grade").status_code == 401
+
+
+def test_repeated_wrong_secrets_get_locked_out(client, monkeypatch):
+    # Regression for a real security-review finding: the admin gate had
+    # no rate limiting at all, making a weak/guessable secret an
+    # unbounded brute-force target once genuinely publicly reachable.
+    monkeypatch.setattr(deps, "_failures_by_client", {})
+    for _ in range(deps._FAILURE_LIMIT):
+        response = client.get("/api/admin/status", headers={"X-Admin-Secret": "wrong"})
+        assert response.status_code == 401
+
+    locked_out = client.get("/api/admin/status", headers={"X-Admin-Secret": "wrong"})
+    assert locked_out.status_code == 429
+
+    # Even the CORRECT secret is rejected during lockout -- the whole
+    # point is to slow down a brute-force attempt regardless of whether
+    # the attacker's next guess happens to be right.
+    still_locked = client.get("/api/admin/status", headers=AUTH)
+    assert still_locked.status_code == 429
+
+
+def test_correct_secret_never_counts_as_a_failure(client, monkeypatch):
+    monkeypatch.setattr(deps, "_failures_by_client", {})
+    for _ in range(deps._FAILURE_LIMIT + 5):
+        response = client.get("/api/admin/status", headers=AUTH)
+        assert response.status_code == 200

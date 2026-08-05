@@ -18,7 +18,13 @@ those into our identity scheme -- passed via
 "mlb_game_pk":...}, ...])`. A prop for a name that isn't in that list (a
 bench/relief pitcher prop, a name-format mismatch) is silently skipped
 with a warning, never guessed at -- matching every other adapter's
-"absence is a first-class outcome" contract.
+"absence is a first-class outcome" contract. If two confirmed starters on
+the same slate happen to share an identical full_name (a real, if rare,
+collision -- e.g. two different "Luis Garcia"s), a bare name match can't
+tell them apart; a found line for that name is deliberately NOT attached
+to either one, with a visible warning, rather than silently guessing --
+found and fixed after a live adversarial point-in-time/correctness audit
+traced exactly this failure mode.
 
 Fetching odds is a per-event, credit-metered call, so events are first
 filtered to the slate's date window (same window games_for_slate_date
@@ -78,9 +84,27 @@ class LinesOddsApiAdapter(SourceAdapter):
                 is_available=False,
                 warnings=["No confirmed probable pitchers supplied -- nothing to look up props for"],
             )
-        by_name: dict[str, dict[str, Any]] = {p["full_name"]: p for p in probables}
+
+        by_name: dict[str, list[dict[str, Any]]] = {}
+        for p in probables:
+            by_name.setdefault(p["full_name"], []).append(p)
+        # Two different confirmed starters sharing an exact full_name is
+        # rare but real (verified as a genuine, reproducible bug in an
+        # earlier version of this adapter, which silently attached a real
+        # line to the wrong player_mlb_id/mlb_game_pk on this exact
+        # collision) -- a bare vendor name string alone can't disambiguate
+        # them, so any line found for an ambiguous name is deliberately
+        # dropped rather than guessed at.
+        ambiguous_names = {name for name, group in by_name.items() if len(group) > 1}
 
         warnings: list[str] = []
+        for name in sorted(ambiguous_names):
+            warnings.append(
+                f"Ambiguous: {len(by_name[name])} confirmed starters today are named "
+                f"'{name}' -- cannot safely attach a line to either from a bare name "
+                "match alone, so none was attached"
+            )
+
         try:
             events_resp = self._client.get(EVENTS_URL, params={"apiKey": self._api_key, "dateFormat": "iso"})
             events_resp.raise_for_status()
@@ -90,7 +114,7 @@ class LinesOddsApiAdapter(SourceAdapter):
                 records=[],
                 fetched_at=fetched_at,
                 is_available=False,
-                warnings=[f"Could not fetch MLB events: {exc}"],
+                warnings=[*warnings, f"Could not fetch MLB events: {_safe_fetch_error(exc)}"],
             )
         _check_quota(events_resp, warnings)
 
@@ -125,13 +149,15 @@ class LinesOddsApiAdapter(SourceAdapter):
                 odds_resp.raise_for_status()
                 detail = odds_resp.json()
             except (httpx.HTTPError, ValueError) as exc:
-                warnings.append(f"Could not fetch odds for event {event_id}: {exc}")
+                warnings.append(f"Could not fetch odds for event {event_id}: {_safe_fetch_error(exc)}")
                 continue
             _check_quota(odds_resp, warnings)
 
-            records.extend(_records_for_event(detail, event_id, by_name, matched_names, fetched_at))
+            records.extend(
+                _records_for_event(detail, event_id, by_name, ambiguous_names, matched_names, fetched_at)
+            )
 
-        unmatched = sorted(set(by_name) - matched_names)
+        unmatched = sorted(set(by_name) - matched_names - ambiguous_names)
         if unmatched:
             warnings.append(f"No {MARKET} prop found for: {', '.join(unmatched)}")
 
@@ -148,7 +174,8 @@ class LinesOddsApiAdapter(SourceAdapter):
 def _records_for_event(
     detail: dict[str, Any],
     event_id: str,
-    by_name: dict[str, dict[str, Any]],
+    by_name: dict[str, list[dict[str, Any]]],
+    ambiguous_names: set[str],
     matched_names: set[str],
     fetched_at: datetime,
 ) -> list[RawRecord]:
@@ -173,11 +200,12 @@ def _records_for_event(
                     slot["under_price"] = outcome.get("price")
 
             for player_name, sides in by_player.items():
-                if player_name in matched_names or sides["line"] is None:
+                if player_name in matched_names or player_name in ambiguous_names or sides["line"] is None:
                     continue
-                probable = by_name.get(player_name)
-                if probable is None:
+                candidates = by_name.get(player_name)
+                if not candidates:
                     continue  # not one of today's confirmed starters -- skip silently, no guess
+                probable = candidates[0]  # len == 1 here: ambiguous (len > 1) names are filtered above
                 matched_names.add(player_name)
                 payload = {
                     "bookmaker": bookmaker.get("key"),
@@ -211,6 +239,24 @@ def _ordered_bookmakers(bookmakers: list[dict[str, Any]]) -> list[dict[str, Any]
     preferred = [b for b in bookmakers if b.get("key") == PREFERRED_BOOKMAKER]
     rest = [b for b in bookmakers if b.get("key") != PREFERRED_BOOKMAKER]
     return preferred + rest
+
+
+def _safe_fetch_error(exc: Exception) -> str:
+    """A warning-safe error description that never touches str(exc).
+
+    httpx.HTTPStatusError's __str__ embeds the full request URL,
+    including this adapter's apiKey query parameter -- str()-ing it
+    directly into a warning would risk leaking the vendor API key into
+    AdapterFetchResult.warnings, which flows into the append-only,
+    undeletable audit_events table (ingest_service.py), admin API
+    responses (GET /api/admin/status, POST .../run), and CLI stdout/
+    deploy logs. A real HTTP-error scenario (401 on a bad/rotated key,
+    429 on quota exhaustion, a vendor 5xx) is exactly the case this
+    exists for -- found during a live security review, not hypothetical.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return type(exc).__name__
 
 
 def _check_quota(response: httpx.Response, warnings: list[str]) -> None:
