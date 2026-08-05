@@ -4,6 +4,7 @@ from cassandra.db.models import (  # noqa: F401
     audit,
     features,
     grading,
+    historical,
     identity,
     pipeline,
     projection,

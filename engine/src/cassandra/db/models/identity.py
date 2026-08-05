@@ -61,4 +61,12 @@ class Game(Base):
     away_team_id: Mapped[str | None] = mapped_column(String)
     venue_id: Mapped[str | None] = mapped_column(String)
     status: Mapped[str | None] = mapped_column(String)
+    # MLB's own schedule "gameType" code: "R" (regular season), "P"
+    # (postseason), "S" (spring training), "A" (all-star), "E"
+    # (exhibition), etc. Nullable because the live daily schedule adapter
+    # predates this column and never set it -- backfilled/newly-ingested
+    # games populate it; historical backfill (docs/HISTORICAL_BACKFILL_DESIGN.md)
+    # uses it to keep the default training cohort to regular-season games.
+    game_type: Mapped[str | None] = mapped_column(String)
+    season: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -68,6 +68,8 @@ def upsert_game(
     away_team_id: str | None,
     venue_id: str | None,
     status: str | None,
+    game_type: str | None = None,
+    season: int | None = None,
 ) -> str:
     game_id = mlb_game_id(mlb_game_pk)
     values = {
@@ -79,6 +81,8 @@ def upsert_game(
         "away_team_id": away_team_id,
         "venue_id": venue_id,
         "status": status,
+        "game_type": game_type,
+        "season": season,
     }
     stmt = pg_insert(Game).values(**values)
     update_cols = {k: v for k, v in values.items() if k != "game_id"}
@@ -89,7 +93,11 @@ def upsert_game(
 
 def resolve_identity_from_schedule_payload(session: Session, game_payload: dict[str, Any]) -> str:
     """From one MLB schedule 'game' dict (a raw_schedule_events payload),
-    upsert venue/teams/game identity rows. Returns the resolved game_id."""
+    upsert venue/teams/game identity rows. Returns the resolved game_id.
+
+    Also used by the historical backfill's season-range schedule fetch
+    (historical/backfill.py) -- same payload shape, MLB's schedule
+    endpoint just returns more of them at once for a date range."""
     venue = game_payload.get("venue") or {}
     venue_id = None
     if venue.get("id"):
@@ -114,6 +122,8 @@ def resolve_identity_from_schedule_payload(session: Session, game_payload: dict[
         away_team_id=away_team_id,
         venue_id=venue_id,
         status=status,
+        game_type=game_payload.get("gameType"),
+        season=int(game_payload["season"]) if game_payload.get("season") else None,
     )
 
 
