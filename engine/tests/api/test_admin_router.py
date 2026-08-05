@@ -68,6 +68,35 @@ def test_admin_status_surfaces_source_health_and_failed_run_as_blocking(client, 
     assert any("src-admin-test" in issue for issue in body["blocking_issues"])
 
 
+def test_umpire_stub_never_appears_as_a_blocking_issue(client, db_session):
+    # umpire_stub is a permanent stand-in (no free umpire source exists)
+    # and always reports unavailable by design -- the handbook is
+    # explicit this must never block or alarm anything (CLAUDE.md,
+    # CURRENT_STATE_AUDIT.md's Provisional section). Regression for a
+    # real bug found live: it showed up under "Blocking Issues" forever
+    # since nothing could ever bring its consecutive-failure count down.
+    stmt = pg_insert(Source).values(source_id="umpire_stub", name="umpire_stub", kind="umpire")
+    db_session.execute(stmt)
+    db_session.add(
+        SourceHealth(
+            source_id="umpire_stub",
+            last_status="unavailable",
+            last_failure_at=datetime.now(UTC),
+            consecutive_failures=999,
+        )
+    )
+    db_session.flush()
+
+    response = client.get("/api/admin/status", headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    # still visible in source health (transparency) --
+    assert any(s["source_id"] == "umpire_stub" for s in body["sources"])
+    # -- just never escalated to a blocking issue
+    assert not any("umpire_stub" in issue for issue in body["blocking_issues"])
+
+
 def test_admin_run_actions_require_auth(client):
     assert client.post("/api/admin/runs/2023-06-15/run").status_code == 401
     assert client.post("/api/admin/runs/2023-06-15/grade").status_code == 401

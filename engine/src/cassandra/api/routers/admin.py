@@ -19,6 +19,7 @@ from fastapi import APIRouter, Body, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from cassandra.adapters.umpire_stub import UmpireStubAdapter
 from cassandra.api.deps import get_db, require_admin
 from cassandra.api.schemas import (
     AdminStatusResponse,
@@ -40,6 +41,13 @@ router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(re
 
 CONSECUTIVE_FAILURE_ALERT_THRESHOLD = 3
 RECENT_RUNS_LIMIT = 10
+# umpire_stub is a permanent stand-in -- no reliable free umpire source
+# exists, so it reports unavailable on every single call by design (see
+# its own docstring and CURRENT_STATE_AUDIT.md's Provisional section).
+# The handbook is explicit that this must never block or alarm anything;
+# surfacing it here as a "blocking issue" would be a standing false
+# alarm an operator could never actually resolve.
+NEVER_BLOCKING_SOURCES = {UmpireStubAdapter.source_name}
 
 
 @router.get("/status", response_model=AdminStatusResponse)
@@ -96,6 +104,8 @@ def get_admin_status(db: Session = Depends(get_db)) -> AdminStatusResponse:
         for s in sources
     ]
     for s in sources:
+        if s.source_id in NEVER_BLOCKING_SOURCES:
+            continue
         if s.consecutive_failures >= CONSECUTIVE_FAILURE_ALERT_THRESHOLD:
             blocking_issues.append(f"Source {s.source_id} has failed {s.consecutive_failures} times in a row")
 
