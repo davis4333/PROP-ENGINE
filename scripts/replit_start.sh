@@ -38,12 +38,22 @@ uv pip install --quiet --python "$REPO_ROOT/engine/.venv/bin/python" -e "$REPO_R
 echo "==> Applying database migrations"
 (cd "$REPO_ROOT/engine" && .venv/bin/python -m alembic upgrade head)
 
-echo "==> Starting the engine API on :8000 (auto-scheduler enabled)"
+echo "==> Starting the engine API on 127.0.0.1:8000 (auto-scheduler enabled)"
 # AUTO_SCHEDULER_ENABLED: a long-running Repl should populate Today and
 # grade recent slates on its own -- see orchestration/scheduler.py. Off
 # by default everywhere else (config.py) since a one-off CLI/test run of
 # the engine shouldn't silently start hitting the live MLB API.
-(cd "$REPO_ROOT/engine" && AUTO_SCHEDULER_ENABLED=true .venv/bin/uvicorn cassandra.api.main:app --host 0.0.0.0 --port 8000) &
+#
+# --host 127.0.0.1, not 0.0.0.0: the frontend reaches the engine over
+# localhost on this same machine/container (see .replit's API_BASE_URL
+# and web/next.config.ts's rewrite) -- there's no reason for the engine
+# to be reachable from outside the Repl at all. A real production bug
+# was traced to this: with the engine also listening on 0.0.0.0, a
+# Reserved VM Deployment's public-port auto-detection picked :8000
+# (the engine) instead of :3000 (the frontend), so the public URL served
+# raw API JSON/404s instead of real pages. Binding loopback-only removes
+# the engine from being a public-port candidate at all.
+(cd "$REPO_ROOT/engine" && AUTO_SCHEDULER_ENABLED=true .venv/bin/uvicorn cassandra.api.main:app --host 127.0.0.1 --port 8000) &
 ENGINE_PID=$!
 trap 'kill $ENGINE_PID 2>/dev/null || true' EXIT
 

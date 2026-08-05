@@ -285,10 +285,16 @@ to invent missing product decisions:
   pages. This is a Replit Deployment networking/port-selection setting,
   not an application bug; `.replit`'s `[[ports]]` block already maps
   `3000 -> 80` correctly, but this deployment type appears to let the
-  Replit UI's own port choice override that. Needs the deployment's
-  public port explicitly reset to `3000` and reverified with a fresh
-  `curl -I` against the root URL before this can be called fully working
-  end to end.
+  Replit UI's own port choice override that. Best-diagnosis fix applied
+  (not yet reverified against the live deployment): the engine now binds
+  `127.0.0.1:8000` instead of `0.0.0.0:8000` in `replit_start.sh` — it
+  only needs to be reachable from the frontend on the same machine, and
+  removing it from `0.0.0.0` takes it out of the running of any
+  port-auto-detection Replit's deployment networking does across all
+  listening interfaces. If redeploying with this change doesn't fix it,
+  the deployment's public port needs to be explicitly reset to `3000` in
+  Replit's own deployment UI instead. Reverify with a fresh `curl -I`
+  against the root URL before calling this fully working end to end.
 
 ## Not verified against real infrastructure this session
 

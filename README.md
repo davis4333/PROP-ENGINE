@@ -187,13 +187,18 @@ and take under a minute to set up.
    domain served raw JSON 404s (`{"detail":"Not Found"}`, `server:
    uvicorn` in the response headers) for `/`, `/ledger`, and `/admin`
    even though `/health` and `/api/today` worked fine (the engine does
-   have those routes). If you see that, go into the Deployment's
+   have those routes). `scripts/replit_start.sh` now binds the engine to
+   `127.0.0.1` instead of `0.0.0.0` (it's only ever called by the
+   frontend on the same machine, so it never needed to be reachable
+   externally) — the best available diagnosis is that this stops it
+   being a candidate at all for whatever port-auto-detection the
+   deployment was doing. If a fresh redeploy after pulling that change
+   still serves the engine on the public URL, go into the Deployment's
    networking/port settings in Replit's UI and explicitly select port
-   `3000` as the public port — `.replit`'s own `[[ports]]` block already
-   maps `3000 -> 80`, but some deployment types let the UI override that
-   with its own separately-stored choice. `curl -I` against the deployed
-   root URL and confirm you get real HTML (or at least `content-type:
-   text/html`), not a JSON body.
+   `3000` as the public port instead. Either way, confirm with `curl -I`
+   against the deployed root URL that you get real HTML (or at least
+   `content-type: text/html`), not a JSON body, before considering the
+   deployment done.
 
 This configuration has been exercised against a live Replit account,
 including a Reserved VM Deployment (external Neon/Supabase Postgres,
