@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +23,24 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+psycopg://cassandra:cassandra_dev_only@localhost:5432/cassandra"
+
+    @field_validator("database_url")
+    @classmethod
+    def _normalize_database_url_scheme(cls, value: str) -> str:
+        """Managed Postgres providers (Neon, Supabase, Replit's own Postgres
+        integration, Heroku-style hosts) hand out "postgresql://" or
+        "postgres://" connection strings. SQLAlchemy needs the psycopg3
+        driver named explicitly ("postgresql+psycopg://") or it falls back
+        to psycopg2, which this project doesn't install. Rewriting the
+        scheme here means any of those connection strings can be pasted in
+        as-is, rather than requiring a manual edit every deploy."""
+        if value.startswith("postgresql+"):
+            return value
+        if value.startswith("postgresql://"):
+            return "postgresql+psycopg://" + value[len("postgresql://") :]
+        if value.startswith("postgres://"):
+            return "postgresql+psycopg://" + value[len("postgres://") :]
+        return value
 
     # ADR 0009 -- calendar-day bucketing only, never used for storage/comparison.
     operating_timezone: str = "America/New_York"

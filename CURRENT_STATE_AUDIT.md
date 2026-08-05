@@ -190,6 +190,23 @@ to invent missing product decisions:
 - **Frontend scope**: Today/Ledger/Admin only (ADR 0012) — no All
   Projections, Player View, or Methodology pages.
 
+## Verified against real infrastructure
+
+- **Replit deployment**: `.replit`, `replit.nix`, and
+  `scripts/replit_start.sh` were exercised against a live Replit account
+  (external managed Postgres, both services running under
+  `replit_start.sh`). Confirmed working: migrations applied cleanly,
+  `make seed-demo`'s target script populated a real historical slate,
+  Today/Ledger/Admin all rendered real data (Ledger showing the seeded
+  2×WIN/1×LOSS/1×PUSH), and the Admin shared-secret gate worked. One real
+  friction point found and fixed: managed Postgres providers (Neon,
+  Supabase, Replit's own Postgres, Heroku-style hosts) hand out
+  `postgresql://`/`postgres://` connection strings, but SQLAlchemy needs
+  `postgresql+psycopg://` or it falls back to a driver this project
+  doesn't install — `config.py`'s `Settings.database_url` now rewrites
+  either scheme automatically, so a pasted-in connection string works
+  without manual editing.
+
 ## Not verified against real infrastructure this session
 
 - **Docker Compose**: `docker-compose.yml` (postgres + engine + web) is
@@ -198,12 +215,6 @@ to invent missing product decisions:
   — was run and verified directly outside Docker (this sandboxed session
   has no Docker daemon available). The compose file itself has not been
   exercised with an actual `docker compose up`.
-- **Replit deployment**: `.replit`, `replit.nix`, and
-  `scripts/replit_start.sh` are a best-effort configuration built from
-  first principles (every piece it orchestrates — migrations, the engine
-  API, the frontend, the single-origin proxy — has been tested directly
-  in this build) but has not been exercised against a live Replit
-  account. See the README's "Deploying to Replit" section.
 
 ## Not automatable from this session (need a human with repo admin)
 

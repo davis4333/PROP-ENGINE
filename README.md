@@ -129,16 +129,16 @@ Replit has no managed Postgres, so you need a free external one first —
 and take under a minute to set up.
 
 1. **Get a Postgres connection string.** Create a free Neon (or
-   Supabase) project, copy its connection string (must be in
-   `postgresql://` form; Cassandra's `DATABASE_URL` needs the
-   `postgresql+psycopg://` driver prefix — replace `postgresql://` with
-   `postgresql+psycopg://` at the front, keep the rest as-is).
+   Supabase) project and copy its connection string as given — Cassandra
+   accepts `postgres://`, `postgresql://`, or `postgresql+psycopg://`
+   directly and normalizes it to the `psycopg3` driver internally
+   (`config.py`'s `Settings.database_url` validator), so no manual prefix
+   editing is needed.
 2. **Import this repository into Replit** (Replit → Create → Import from
    GitHub). It picks up `.replit` and `replit.nix` automatically
    (Python 3.12, Node 20, pnpm, `psql`).
 3. **Add Secrets** (Replit's padlock icon in the sidebar), at minimum:
-   - `DATABASE_URL` — the connection string from step 1, with the
-     `postgresql+psycopg://` prefix.
+   - `DATABASE_URL` — the connection string from step 1, unmodified.
    - `ADMIN_SHARED_SECRET` — any string you choose (this gates the Admin
      page; see ADR 0011 — it's explicitly not production-grade auth).
    - Optionally `DECISION_EDGE_THRESHOLD` / `OPERATING_TIMEZONE` to
@@ -161,11 +161,10 @@ and take under a minute to set up.
    Replit's `REPLIT_DEPLOYMENT` variable is set (done automatically by
    Replit Deployments).
 
-This configuration is provided as a verified-by-construction starting
-point (every piece — migrations, the engine API, the frontend, the proxy
-architecture — has been tested directly in this build), but has not been
-exercised against a live Replit account; verify Secrets and the exposed
-port match your Replit plan's actual behavior after import.
+This configuration has been verified against a live Replit account
+(external Neon/Supabase Postgres, both services running under
+`replit_start.sh`): migrations applied cleanly, the demo slate seeded
+successfully, and Today/Ledger/Admin all rendered real data.
 
 ## Repository layout
 
