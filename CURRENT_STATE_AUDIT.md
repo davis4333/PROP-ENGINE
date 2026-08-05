@@ -300,8 +300,21 @@ to invent missing product decisions:
   confirmed against a real vendor, the rest are common approximations.
   Unknown venues fall back to neutral with a visible warning.
 - **Weather coordinates**: `orchestration/run_slate.py`'s
-  `VENUE_COORDINATES` static lookup only has Camden Yards — other venues
-  simply get no weather record (a visible gap, not a guess).
+  `VENUE_COORDINATES` static lookup now covers all 30 current active-team
+  home venues, sourced directly from MLB's own Stats API
+  (`/api/v1/venues?hydrate=location`), not typed from memory — an unlisted
+  venue (spring training, a neutral-site game) simply gets no weather
+  record (a visible gap, not a guess). It's a static table, not a live
+  lookup, so a relocation or new park requires regenerating it by hand.
+  The forecast target time was also fixed to use each game's real
+  `scheduled_start_utc` (keyed by the earliest game per venue) instead of
+  the pipeline's run cutoff — previously the forecast was for "whenever
+  the pipeline happened to run," not the actual game. Two known,
+  documented (not silent) remaining gaps: a doubleheader's second game
+  reuses the first game's forecast time (per-game weather keying would
+  also require changing `pit/snapshot_builder.py`'s venue-only weather
+  lookup); and the 8 dome/retractable-roof venues still get an outdoor
+  forecast since no per-game roof-open/closed signal exists.
 - **`DECISION_EDGE_THRESHOLD=0.05`**: an explicitly provisional constant
   (ADR 0005), not calibrated or business-approved.
 - **Neutral 0.5 decision baseline**: never described as an

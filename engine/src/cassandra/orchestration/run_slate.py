@@ -59,16 +59,60 @@ from cassandra.models.baseline import MODEL_VERSION, BaselinePoissonModel
 from cassandra.pit.asof import all_as_of
 from cassandra.pit.snapshot_builder import PitcherSlateEntry, build_snapshot, games_for_slate_date
 
-# Known venue coordinates for the (free) Open-Meteo weather adapter -- MLB's
-# own schedule/venue payload doesn't include lat/lon, and there's no
+# Venue coordinates for the (free) Open-Meteo weather adapter -- MLB's own
+# schedule/venue payload doesn't include lat/lon, and there's no
 # identity.py column for it (see db/models/identity.py's Venue model).
-# Same provisional-static-lookup pattern as
-# adapters/park_factors_static.py's STATIC_PARK_K_FACTORS: legitimate for
-# an MVP, not a claim of complete coverage -- an unlisted venue simply
-# gets no weather record (a visible gap via WeatherOpenMeteoAdapter's
-# normal "no venues supplied"-style warning), never a guess.
+# All 30 current active-team home venues, pulled directly from MLB's own
+# Stats API (GET /api/v1/venues?venueIds=...&hydrate=location -- the same
+# free, public, no-key source every other adapter in this codebase already
+# uses, not a third-party guess) rather than typed from memory, since MLB
+# venue ids are internal and teams do relocate (e.g. the Athletics moved to
+# Sutter Health Park in Sacramento, venue id 2529, mid-build). Regenerate by
+# re-running that same query if a team relocates or a new park opens --
+# this is deliberately a static table, not a live lookup, so an unlisted
+# venue (a spring-training park, a one-off international/neutral-site game)
+# simply gets no weather record: a visible gap via
+# WeatherOpenMeteoAdapter's normal "no venues supplied"-style warning, never
+# a guess. Same provisional-static-lookup pattern as
+# adapters/park_factors_static.py's STATIC_PARK_K_FACTORS.
+#
+# Known remaining gap, documented not silent: domes/retractable-roof parks
+# (Tropicana Field, Rogers Centre, Chase Field, American Family Field,
+# T-Mobile Park, Daikin Park, loanDepot park, Globe Life Field) still get an
+# outdoor weather forecast fetched -- there's no per-game roof-open/closed
+# signal available from this data source, so wind/temperature features may
+# not reflect actual in-game conditions at those venues.
 VENUE_COORDINATES: dict[int, tuple[float, float]] = {
-    2: (39.284, -76.6217),  # Oriole Park at Camden Yards -- the fixture demo slate's venue
+    1: (33.80019044, -117.8823996),  # Angel Stadium -- Los Angeles Angels
+    2: (39.283787, -76.621689),  # Oriole Park at Camden Yards -- Baltimore Orioles
+    3: (42.346456, -71.097441),  # Fenway Park -- Boston Red Sox
+    4: (41.83, -87.634167),  # Rate Field -- Chicago White Sox
+    5: (41.495861, -81.685255),  # Progressive Field -- Cleveland Guardians
+    7: (39.051567, -94.480483),  # Kauffman Stadium -- Kansas City Royals
+    12: (27.767778, -82.6525),  # Tropicana Field -- Tampa Bay Rays (dome)
+    14: (43.64155, -79.38915),  # Rogers Centre -- Toronto Blue Jays (retractable roof)
+    15: (33.445302, -112.066687),  # Chase Field -- Arizona Diamondbacks (retractable roof)
+    17: (41.948171, -87.655503),  # Wrigley Field -- Chicago Cubs
+    19: (39.756042, -104.994136),  # Coors Field -- Colorado Rockies
+    22: (34.07368, -118.24053),  # (Dodger Stadium) -- Los Angeles Dodgers
+    31: (40.446904, -80.005753),  # PNC Park -- Pittsburgh Pirates
+    32: (43.02838, -87.97099),  # American Family Field -- Milwaukee Brewers (retractable roof)
+    680: (47.591333, -122.33251),  # T-Mobile Park -- Seattle Mariners (retractable roof)
+    2392: (29.756967, -95.355509),  # Daikin Park -- Houston Astros (retractable roof)
+    2394: (42.3391151, -83.048695),  # Comerica Park -- Detroit Tigers
+    2395: (37.778383, -122.389448),  # Oracle Park -- San Francisco Giants
+    2529: (38.57994, -121.51246),  # Sutter Health Park -- Athletics
+    2602: (39.097389, -84.506611),  # Great American Ball Park -- Cincinnati Reds
+    2680: (32.707861, -117.157278),  # Petco Park -- San Diego Padres
+    2681: (39.90539086, -75.16716957),  # Citizens Bank Park -- Philadelphia Phillies
+    2889: (38.62256667, -90.19286667),  # Busch Stadium -- St. Louis Cardinals
+    3289: (40.75753012, -73.84559155),  # Citi Field -- New York Mets
+    3309: (38.872861, -77.007501),  # Nationals Park -- Washington Nationals
+    3312: (44.981829, -93.277891),  # Target Field -- Minnesota Twins
+    3313: (40.82919482, -73.9264977),  # Yankee Stadium -- New York Yankees
+    4169: (25.77796236, -80.21951795),  # loanDepot park -- Miami Marlins (retractable roof)
+    4705: (33.890672, -84.467641),  # Truist Park -- Atlanta Braves
+    5325: (32.747299, -97.081818),  # Globe Life Field -- Texas Rangers (retractable roof)
 }
 
 
@@ -387,12 +431,35 @@ def ingest_slate(
         )
     )
 
+    # Real first-pitch time per venue, not the pipeline's run cutoff --
+    # found and fixed after an external audit flagged that this
+    # previously passed cutoff_at as the weather forecast target,
+    # meaning the forecast was for "whenever this happened to run," not
+    # for the actual game. Keyed by the EARLIEST game at that venue this
+    # slate: correct for the (overwhelming majority) single-game case; a
+    # doubleheader's second game reuses the first game's forecast time
+    # rather than getting its own -- a real, documented limitation (see
+    # CURRENT_STATE_AUDIT.md), not a silent one, since per-game weather
+    # keying would also need pit/snapshot_builder.py's weather lookup to
+    # stop being venue-only, a larger change left for later.
+    our_venue_id_to_mlb_venue_id = {v.venue_id: v.mlb_venue_id for v in venues if v.mlb_venue_id is not None}
+    earliest_game_time_by_mlb_venue_id: dict[int, datetime] = {}
+    for game in games:
+        if game.venue_id is None:
+            continue
+        mlb_vid = our_venue_id_to_mlb_venue_id.get(game.venue_id)
+        if mlb_vid is None:
+            continue
+        current = earliest_game_time_by_mlb_venue_id.get(mlb_vid)
+        if current is None or game.scheduled_start_utc < current:
+            earliest_game_time_by_mlb_venue_id[mlb_vid] = game.scheduled_start_utc
+
     weather_venues = [
         {
             "venue_id": vid,
             "lat": VENUE_COORDINATES[vid][0],
             "lon": VENUE_COORDINATES[vid][1],
-            "game_time_utc": cutoff_at,
+            "game_time_utc": earliest_game_time_by_mlb_venue_id.get(vid, cutoff_at),
         }
         for vid in venue_ids
         if vid in VENUE_COORDINATES
