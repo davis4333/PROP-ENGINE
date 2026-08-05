@@ -25,14 +25,22 @@ filtered to the slate's date window (same window games_for_slate_date
 uses) before requesting their odds -- avoids burning API credits on
 games days away from this slate.
 
-Uses whichever bookmaker is listed first for a given player's
-pitcher_strikeouts market; cross-book consensus is a future improvement,
-not needed for this MVP (see CURRENT_STATE_AUDIT.md's Provisional
-section).
+Prefers DraftKings when it has posted a given player's market, falling
+back to whichever other bookmaker has it; cross-book consensus is a
+future improvement, not needed for this MVP (see
+CURRENT_STATE_AUDIT.md's Provisional section).
+
+The Odds API's free tier is quota-metered (500 requests/month) and
+returns the remaining balance on every response via the
+`x-requests-remaining` header -- logged at INFO on every fetch, and
+surfaced as a real warning (not just a log line) once it drops below
+`LOW_QUOTA_WARNING_THRESHOLD`, so a long-running deployment doesn't
+silently run out mid-slate.
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
@@ -41,9 +49,13 @@ import httpx
 from cassandra.adapters.base import AdapterFetchResult, RawRecord, SourceAdapter
 from cassandra.db.models.raw import RawLine
 
+logger = logging.getLogger(__name__)
+
 API_BASE = "https://api.the-odds-api.com/v4/sports/baseball_mlb"
 EVENTS_URL = f"{API_BASE}/events"
 MARKET = "pitcher_strikeouts"
+PREFERRED_BOOKMAKER = "draftkings"
+LOW_QUOTA_WARNING_THRESHOLD = 20
 
 
 class LinesOddsApiAdapter(SourceAdapter):
@@ -68,6 +80,7 @@ class LinesOddsApiAdapter(SourceAdapter):
             )
         by_name: dict[str, dict[str, Any]] = {p["full_name"]: p for p in probables}
 
+        warnings: list[str] = []
         try:
             events_resp = self._client.get(EVENTS_URL, params={"apiKey": self._api_key, "dateFormat": "iso"})
             events_resp.raise_for_status()
@@ -79,11 +92,11 @@ class LinesOddsApiAdapter(SourceAdapter):
                 is_available=False,
                 warnings=[f"Could not fetch MLB events: {exc}"],
             )
+        _check_quota(events_resp, warnings)
 
         window_start = datetime.combine(slate_date, time.min, tzinfo=UTC) - timedelta(days=1)
         window_end = window_start + timedelta(days=3)
         records: list[RawRecord] = []
-        warnings: list[str] = []
         matched_names: set[str] = set()
 
         for event in events:
@@ -114,6 +127,7 @@ class LinesOddsApiAdapter(SourceAdapter):
             except (httpx.HTTPError, ValueError) as exc:
                 warnings.append(f"Could not fetch odds for event {event_id}: {exc}")
                 continue
+            _check_quota(odds_resp, warnings)
 
             records.extend(_records_for_event(detail, event_id, by_name, matched_names, fetched_at))
 
@@ -139,7 +153,7 @@ def _records_for_event(
     fetched_at: datetime,
 ) -> list[RawRecord]:
     records: list[RawRecord] = []
-    for bookmaker in detail.get("bookmakers", []):
+    for bookmaker in _ordered_bookmakers(detail.get("bookmakers", [])):
         for market in bookmaker.get("markets", []):
             if market.get("key") != MARKET:
                 continue
@@ -187,3 +201,30 @@ def _records_for_event(
                     )
                 )
     return records
+
+
+def _ordered_bookmakers(bookmakers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """DraftKings first (when present), everything else after in whatever
+    order the API returned -- the caller keeps only the first bookmaker
+    seen for a given player, so this ordering is what "prefers DraftKings,
+    falls back to any other" actually means in practice."""
+    preferred = [b for b in bookmakers if b.get("key") == PREFERRED_BOOKMAKER]
+    rest = [b for b in bookmakers if b.get("key") != PREFERRED_BOOKMAKER]
+    return preferred + rest
+
+
+def _check_quota(response: httpx.Response, warnings: list[str]) -> None:
+    """The Odds API returns remaining monthly-quota balance on every
+    response via this header. Always logged (operational visibility);
+    only escalated to a real warning near exhaustion, since logging every
+    call at warning level would drown out actual problems."""
+    remaining_raw = response.headers.get("x-requests-remaining")
+    if remaining_raw is None:
+        return
+    try:
+        remaining = int(remaining_raw)
+    except ValueError:
+        return
+    logger.info("Odds API requests remaining this period: %d", remaining)
+    if remaining < LOW_QUOTA_WARNING_THRESHOLD:
+        warnings.append(f"Odds API quota low: only {remaining} requests remaining this period")

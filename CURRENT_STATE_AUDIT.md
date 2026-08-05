@@ -53,13 +53,23 @@ against real (not mocked) data during this build.
   silently skipped, never guessed at, matching every other adapter's
   "absence is a first-class outcome" contract. Filters events to the
   slate's date window before requesting per-event odds (a metered call)
-  to avoid burning API credits on games outside the slate. Tested against
-  real captured responses (`tests/fixtures/odds_api/`) with respx, plus a
-  full `run_slate()` integration test proving the branch actually gets
-  used when configured. **This is NOT Underdog's own DFS pick'em
-  lines** — Underdog has no public/authorized API (see Provisional
-  below); these are real regulated-sportsbook strikeout totals, a
-  different but legitimate market.
+  to avoid burning API credits on games outside the slate. Prefers
+  DraftKings when it's posted a given player's market, falling back to
+  whichever other bookmaker has it. Logs and, below a low-quota
+  threshold, surfaces a real warning for the vendor's remaining
+  monthly-request balance (`x-requests-remaining` response header) — the
+  free tier is 500 requests/month, which a daily scheduled run across a
+  full MLB slate can exceed; a paid tier or reduced polling is a real
+  operating cost to budget for, not a hidden one. Tested against real
+  captured responses (`tests/fixtures/odds_api/`) with respx (10 unit
+  tests), plus a full `run_slate()` integration test proving the branch
+  actually gets used when configured. **This is NOT Underdog's own DFS
+  pick'em lines** — Underdog has no public/authorized API (see
+  Provisional below); these are real regulated-sportsbook strikeout
+  totals, a different but legitimate market. Runs *instead of* the
+  manual adapter, never alongside it, specifically to avoid two sources
+  disagreeing and tripping `check_line_conflict`'s DATA_CONFLICT finding
+  on the same pitcher/game/market.
 - Generic ingestion service + data-quality gate (stale/missing/conflict/
   market-incomplete checks), with source health tracking and an
   append-only audit trail.

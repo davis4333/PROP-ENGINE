@@ -140,3 +140,123 @@ def test_events_fetch_failure_is_unavailable_not_raise():
     assert result.is_available is False
     assert result.records == []
     assert result.warnings
+
+
+@respx.mock
+def test_prefers_draftkings_over_other_bookmakers():
+    # Real fixture has FanDuel first, then Bovada, neither DraftKings --
+    # confirms plain list order (first listed wins) as the baseline...
+    _mock_events()
+    respx.get(f"{API_BASE}/events/{ORIOLES_ANGELS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=_load("event_odds_no_props_yet.json"))
+    )
+    respx.get(f"{API_BASE}/events/{YANKEES_CARDINALS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=_load("event_odds_with_props.json"))
+    )
+    probables = [{"player_mlb_id": 111, "mlb_game_pk": 999888, "full_name": "Andre Pallante"}]
+    result = LinesOddsApiAdapter(api_key="test-key", http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, probables=probables
+    )
+    assert result.records[0].payload["bookmaker"] == "fanduel"
+
+
+@respx.mock
+def test_prefers_draftkings_when_listed_after_other_bookmakers():
+    # ...and this confirms DraftKings is picked even when it's NOT first
+    # in the API's own list order -- the actual point of the preference.
+    _mock_events()
+    respx.get(f"{API_BASE}/events/{ORIOLES_ANGELS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=_load("event_odds_no_props_yet.json"))
+    )
+    multi_bookmaker_detail = {
+        "id": YANKEES_CARDINALS_EVENT_ID,
+        "commence_time": "2026-08-05T23:06:00Z",
+        "home_team": "New York Yankees",
+        "away_team": "St. Louis Cardinals",
+        "bookmakers": [
+            {
+                "key": "fanduel",
+                "title": "FanDuel",
+                "markets": [
+                    {
+                        "key": "pitcher_strikeouts",
+                        "outcomes": [
+                            {"name": "Over", "description": "Andre Pallante", "price": 118, "point": 4.5},
+                            {"name": "Under", "description": "Andre Pallante", "price": -150, "point": 4.5},
+                        ],
+                    }
+                ],
+            },
+            {
+                "key": "draftkings",
+                "title": "DraftKings",
+                "markets": [
+                    {
+                        "key": "pitcher_strikeouts",
+                        "outcomes": [
+                            {"name": "Over", "description": "Andre Pallante", "price": 105, "point": 5.5},
+                            {"name": "Under", "description": "Andre Pallante", "price": -135, "point": 5.5},
+                        ],
+                    }
+                ],
+            },
+        ],
+    }
+    respx.get(f"{API_BASE}/events/{YANKEES_CARDINALS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=multi_bookmaker_detail)
+    )
+    probables = [{"player_mlb_id": 111, "mlb_game_pk": 999888, "full_name": "Andre Pallante"}]
+
+    result = LinesOddsApiAdapter(api_key="test-key", http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, probables=probables
+    )
+
+    assert len(result.records) == 1
+    record = result.records[0]
+    assert record.payload["bookmaker"] == "draftkings"
+    assert float(record.fields["line"]) == 5.5
+
+
+@respx.mock
+def test_low_quota_produces_a_warning():
+    respx.get(EVENTS_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load("events_2026-08-05_small.json"), headers={"x-requests-remaining": "5"}
+        )
+    )
+    respx.get(f"{API_BASE}/events/{ORIOLES_ANGELS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=_load("event_odds_no_props_yet.json"))
+    )
+    respx.get(f"{API_BASE}/events/{YANKEES_CARDINALS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=_load("event_odds_with_props.json"))
+    )
+    probables = [{"player_mlb_id": 111, "mlb_game_pk": 999888, "full_name": "Andre Pallante"}]
+
+    result = LinesOddsApiAdapter(api_key="test-key", http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, probables=probables
+    )
+
+    assert result.is_available  # low quota is a warning, not an outage
+    assert any("quota low" in w.lower() for w in result.warnings)
+
+
+@respx.mock
+def test_healthy_quota_produces_no_warning():
+    respx.get(EVENTS_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load("events_2026-08-05_small.json"), headers={"x-requests-remaining": "450"}
+        )
+    )
+    respx.get(f"{API_BASE}/events/{ORIOLES_ANGELS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=_load("event_odds_no_props_yet.json"))
+    )
+    respx.get(f"{API_BASE}/events/{YANKEES_CARDINALS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=_load("event_odds_with_props.json"))
+    )
+    probables = [{"player_mlb_id": 111, "mlb_game_pk": 999888, "full_name": "Andre Pallante"}]
+
+    result = LinesOddsApiAdapter(api_key="test-key", http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, probables=probables
+    )
+
+    assert not any("quota" in w.lower() for w in result.warnings)
