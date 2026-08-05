@@ -150,11 +150,24 @@ and take under a minute to set up.
    the engine through that same origin by `web/next.config.ts`, so
    nothing else needs to be exposed). First run installs everything and
    will take a few minutes; subsequent runs are fast.
-5. Once it's up, seed the demo slate from the Replit Shell:
+5. Once it's up, seed the demo slate from the Replit Shell (this is what
+   populates the Ledger page — the demo slate is a real historical date,
+   not today, so it won't show up on the Today page; see step 6a):
    ```bash
    DATABASE_URL="$DATABASE_URL" engine/.venv/bin/python scripts/seed_demo_slate.py
    ```
-6. For a persistent public deployment (not just the live-editing
+6. **Today populates itself automatically** — `replit_start.sh` runs the
+   engine with `AUTO_SCHEDULER_ENABLED=true`
+   (`orchestration/scheduler.py`), which fires `run_slate()` once daily
+   (07:00 in `OPERATING_TIMEZONE` by default — override with
+   `AUTO_RUN_HOUR_LOCAL`) and re-attempts grading recent slates on every
+   poll tick, so no manual CLI/cron setup is needed for a live slate.
+   6a. To see it immediately rather than waiting for the next scheduled
+       run, trigger one by hand from the Replit Shell:
+       ```bash
+       DATABASE_URL="$DATABASE_URL" engine/.venv/bin/python -m cassandra.cli.main run-slate --date "$(date +%F)"
+       ```
+7. For a persistent public deployment (not just the live-editing
    workspace), use Replit's **Deployments** feature — `.replit`'s
    `[deployment]` section is already configured to run the same startup
    script, which switches to a production `next build`/`next start` when

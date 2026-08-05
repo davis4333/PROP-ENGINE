@@ -26,8 +26,12 @@ python3 -m venv "$REPO_ROOT/engine/.venv" --clear=false 2>/dev/null || true
 echo "==> Applying database migrations"
 (cd "$REPO_ROOT/engine" && .venv/bin/python -m alembic upgrade head)
 
-echo "==> Starting the engine API on :8000"
-(cd "$REPO_ROOT/engine" && .venv/bin/uvicorn cassandra.api.main:app --host 0.0.0.0 --port 8000) &
+echo "==> Starting the engine API on :8000 (auto-scheduler enabled)"
+# AUTO_SCHEDULER_ENABLED: a long-running Repl should populate Today and
+# grade recent slates on its own -- see orchestration/scheduler.py. Off
+# by default everywhere else (config.py) since a one-off CLI/test run of
+# the engine shouldn't silently start hitting the live MLB API.
+(cd "$REPO_ROOT/engine" && AUTO_SCHEDULER_ENABLED=true .venv/bin/uvicorn cassandra.api.main:app --host 0.0.0.0 --port 8000) &
 ENGINE_PID=$!
 trap 'kill $ENGINE_PID 2>/dev/null || true' EXIT
 

@@ -51,6 +51,21 @@ class Settings(BaseSettings):
     # ADR 0011 -- demo-only auth, not production-ready.
     admin_shared_secret: str = "change-me-dev-only"
 
+    # orchestration/scheduler.py -- a long-running deployment (e.g. Replit)
+    # populates Today and grades recent slates on its own rather than
+    # requiring a human to run the CLI by hand every day. Off by default
+    # for local/dev and CI runs (an engine imported for one-off CLI/test
+    # use shouldn't silently start hitting the live MLB API in the
+    # background); scripts/replit_start.sh sets this to true. Also
+    # settable via docker-compose.yml's passthrough (defaults to false
+    # there too).
+    auto_scheduler_enabled: bool = False
+    # Local hour (in operating_timezone, 0-23) after which the daily
+    # run_slate() fires, once per day. Grading is re-attempted on every
+    # scheduler tick regardless of this hour -- see scheduler.py's
+    # docstring for why the two have different cadences.
+    auto_run_hour_local: int = 7
+
     # ADR 0010 -- baked in at deploy time (e.g. Replit build step) when
     # there's no .git directory to introspect; falls back to `git
     # rev-parse HEAD` for local/dev runs. See get_git_commit_sha().

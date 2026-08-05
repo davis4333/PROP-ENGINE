@@ -112,6 +112,21 @@ against real (not mocked) data during this build.
 - Live-verified against the real MLB Stats API (not fixtures) for a
   real slate during this build: 30 real pitchers ingested (453 real
   game-log rows), correctly frozen/projected/published.
+- `orchestration/scheduler.py`: an opt-in (`AUTO_SCHEDULER_ENABLED`,
+  off by default) in-process background thread for long-running
+  deployments (Replit's is the motivating case — `replit_start.sh` turns
+  it on) so Today populates and recent slates get graded without a human
+  running the CLI daily. `run_slate()` fires once per local calendar day
+  (`AUTO_RUN_HOUR_LOCAL`); `grade_slate_run()` is re-attempted every poll
+  tick across a trailing window since it's cheap and fully idempotent.
+  One failing tick (a transient MLB API outage, one bad slate date) never
+  blocks the others or kills the thread — each call is individually
+  caught and logged. Wired into `api/main.py` via FastAPI's `lifespan`;
+  confirmed empirically that `TestClient(app)` used without a `with`
+  block (this repo's API test fixture) never triggers `lifespan`, so the
+  scheduler never starts during tests regardless of the settings flag.
+  10 unit tests cover the gating logic and failure isolation with the
+  orchestration calls mocked out (no real DB/network in the test).
 
 ### Fixture demo slate
 
@@ -189,6 +204,12 @@ to invent missing product decisions:
   past this MVP.
 - **Frontend scope**: Today/Ledger/Admin only (ADR 0012) — no All
   Projections, Player View, or Methodology pages.
+- **Background scheduler**: `orchestration/scheduler.py` is a single
+  in-process thread on a coarse poll interval, not a real cron/job queue
+  — sufficient for one Repl/container, not for a multi-instance
+  deployment (would double-run without a distributed lock). `07:00`
+  local as the daily run hour is a reasonable-guess default, not a
+  business-confirmed value.
 
 ## Verified against real infrastructure
 
