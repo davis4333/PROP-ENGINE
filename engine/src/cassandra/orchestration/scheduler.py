@@ -30,8 +30,11 @@ import threading
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from cassandra.config import operating_tz, settings
+from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
 from cassandra.db.session import session_scope
 from cassandra.orchestration.run_slate import grade_slate_run, run_slate
 
@@ -51,30 +54,59 @@ def should_trigger_run(now_local: datetime, last_run_date: date | None) -> bool:
     return now_local.hour >= settings.auto_run_hour_local and last_run_date != now_local.date()
 
 
+def _run_slate_already_succeeded_today(session: Session, today: date) -> bool:
+    """Distinguishes a real run_slate() from a grade_slate_run()-only
+    PipelineRun for the same slate_date -- both write a PipelineRun row,
+    but only run_slate() ever marks PUBLISH as anything other than
+    "skipped" (grade_slate_run() always marks it skipped, detail "Not
+    part of grade_slate_run"). Used to reconcile the in-memory
+    last_run_date against reality on the first tick after a process
+    restart -- without this, a redeploy after today's scheduled run had
+    already succeeded would trigger a redundant one, re-burning real,
+    metered API credits (adapters/lines_odds_api.py) for no new
+    information."""
+    stmt = (
+        select(PipelineRunStage.run_id)
+        .join(PipelineRun, PipelineRun.run_id == PipelineRunStage.run_id)
+        .where(
+            PipelineRun.slate_date == today,
+            PipelineRunStage.stage == "PUBLISH",
+            PipelineRunStage.status != "skipped",
+        )
+        .limit(1)
+    )
+    return session.execute(stmt).first() is not None
+
+
 def run_scheduled_tasks(now_local: datetime, last_run_date: date | None) -> date | None:
     """Runs whichever of run_slate()/grade_slate_run() are due at
     `now_local`, catching and logging (never raising) so one bad tick
     can't kill the background thread. Returns the last_run_date the
     caller's loop should carry forward."""
-    client = httpx.Client(timeout=10.0)
     today = now_local.date()
 
-    if should_trigger_run(now_local, last_run_date):
-        try:
-            with session_scope() as session:
-                run_slate(session, today, datetime.now(UTC), http_client=client)
-            logger.info("scheduler: run_slate succeeded for %s", today)
-        except Exception:
-            logger.exception("scheduler: run_slate failed for %s", today)
-        last_run_date = today
+    if last_run_date != today:
+        with session_scope() as session:
+            if _run_slate_already_succeeded_today(session, today):
+                last_run_date = today
 
-    for offset in range(GRADE_LOOKBACK_DAYS + 1):
-        target = today - timedelta(days=offset)
-        try:
-            with session_scope() as session:
-                grade_slate_run(session, target, http_client=client)
-        except Exception:
-            logger.exception("scheduler: grade_slate_run failed for %s", target)
+    with httpx.Client(timeout=10.0) as client:
+        if should_trigger_run(now_local, last_run_date):
+            try:
+                with session_scope() as session:
+                    run_slate(session, today, datetime.now(UTC), http_client=client)
+                logger.info("scheduler: run_slate succeeded for %s", today)
+            except Exception:
+                logger.exception("scheduler: run_slate failed for %s", today)
+            last_run_date = today
+
+        for offset in range(GRADE_LOOKBACK_DAYS + 1):
+            target = today - timedelta(days=offset)
+            try:
+                with session_scope() as session:
+                    grade_slate_run(session, target, http_client=client)
+            except Exception:
+                logger.exception("scheduler: grade_slate_run failed for %s", target)
 
     return last_run_date
 

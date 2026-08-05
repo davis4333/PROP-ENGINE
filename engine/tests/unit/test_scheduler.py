@@ -56,6 +56,7 @@ def test_run_scheduled_tasks_runs_slate_once_and_grades_the_lookback_window(monk
     monkeypatch.setattr(scheduler, "run_slate", fake_run_slate)
     monkeypatch.setattr(scheduler, "grade_slate_run", fake_grade_slate_run)
     monkeypatch.setattr(scheduler, "session_scope", _fake_session_scope)
+    monkeypatch.setattr(scheduler, "_run_slate_already_succeeded_today", lambda session, today: False)
 
     now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
     last_run_date = scheduler.run_scheduled_tasks(now, last_run_date=None)
@@ -81,6 +82,7 @@ def test_run_scheduled_tasks_skips_run_slate_but_still_grades_when_already_run_t
         scheduler, "grade_slate_run", lambda *a, **k: grade_calls.append(a[1])
     )
     monkeypatch.setattr(scheduler, "session_scope", _fake_session_scope)
+    monkeypatch.setattr(scheduler, "_run_slate_already_succeeded_today", lambda session, today: False)
 
     now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
     last_run_date = scheduler.run_scheduled_tasks(now, last_run_date=date(2026, 8, 5))
@@ -105,6 +107,7 @@ def test_run_scheduled_tasks_grading_still_runs_after_run_slate_raises(monkeypat
         scheduler, "grade_slate_run", lambda *a, **k: grade_calls.append(a[1])
     )
     monkeypatch.setattr(scheduler, "session_scope", _fake_session_scope)
+    monkeypatch.setattr(scheduler, "_run_slate_already_succeeded_today", lambda session, today: False)
 
     now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
     last_run_date = scheduler.run_scheduled_tasks(now, last_run_date=None)
@@ -125,6 +128,7 @@ def test_run_scheduled_tasks_one_failing_grade_date_does_not_block_the_others(mo
     monkeypatch.setattr(scheduler, "run_slate", lambda *a, **k: None)
     monkeypatch.setattr(scheduler, "grade_slate_run", sometimes_raising_grade)
     monkeypatch.setattr(scheduler, "session_scope", _fake_session_scope)
+    monkeypatch.setattr(scheduler, "_run_slate_already_succeeded_today", lambda session, today: False)
 
     now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
     scheduler.run_scheduled_tasks(now, last_run_date=None)
@@ -132,6 +136,64 @@ def test_run_scheduled_tasks_one_failing_grade_date_does_not_block_the_others(mo
     assert date(2026, 8, 4) not in grade_calls
     assert date(2026, 8, 5) in grade_calls
     assert date(2026, 8, 3) in grade_calls
+
+
+def test_run_scheduled_tasks_skips_run_slate_when_db_shows_it_already_succeeded_today(monkeypatch):
+    # Regression for a real gap found by an architecture review:
+    # last_run_date is only an in-memory variable, reset to None on every
+    # process restart. Without reconciling against the DB, a redeploy
+    # after today's real run_slate() already succeeded would trigger a
+    # redundant one, re-burning real, metered Odds API credits for no
+    # new information.
+    monkeypatch.setattr(scheduler.settings, "auto_run_hour_local", 0)
+    run_slate_calls: list[date] = []
+    monkeypatch.setattr(scheduler, "run_slate", lambda *a, **k: run_slate_calls.append(a[1]))
+    monkeypatch.setattr(scheduler, "grade_slate_run", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "session_scope", _fake_session_scope)
+    monkeypatch.setattr(scheduler, "_run_slate_already_succeeded_today", lambda session, today: True)
+
+    now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
+    # last_run_date=None simulates a fresh process (just restarted/redeployed)
+    last_run_date = scheduler.run_scheduled_tasks(now, last_run_date=None)
+
+    assert run_slate_calls == []
+    assert last_run_date == date(2026, 8, 5)
+
+
+def test_run_scheduled_tasks_still_runs_when_db_shows_no_prior_success_today(monkeypatch):
+    monkeypatch.setattr(scheduler.settings, "auto_run_hour_local", 0)
+    run_slate_calls: list[date] = []
+    monkeypatch.setattr(scheduler, "run_slate", lambda *a, **k: run_slate_calls.append(a[1]))
+    monkeypatch.setattr(scheduler, "grade_slate_run", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "session_scope", _fake_session_scope)
+    monkeypatch.setattr(scheduler, "_run_slate_already_succeeded_today", lambda session, today: False)
+
+    now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
+    last_run_date = scheduler.run_scheduled_tasks(now, last_run_date=None)
+
+    assert run_slate_calls == [date(2026, 8, 5)]
+    assert last_run_date == date(2026, 8, 5)
+
+
+def test_db_reconciliation_is_skipped_once_last_run_date_already_matches_today(monkeypatch):
+    # Once the in-memory flag already agrees with today, no need to hit
+    # the DB again on every 15-minute tick just to re-confirm it.
+    monkeypatch.setattr(scheduler.settings, "auto_run_hour_local", 0)
+    check_calls: list[date] = []
+
+    def fake_check(session, today):
+        check_calls.append(today)
+        return False
+
+    monkeypatch.setattr(scheduler, "run_slate", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "grade_slate_run", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "session_scope", _fake_session_scope)
+    monkeypatch.setattr(scheduler, "_run_slate_already_succeeded_today", fake_check)
+
+    now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
+    scheduler.run_scheduled_tasks(now, last_run_date=date(2026, 8, 5))
+
+    assert check_calls == []
 
 
 def test_start_background_scheduler_is_a_noop_when_disabled(monkeypatch):
