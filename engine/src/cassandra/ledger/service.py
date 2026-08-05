@@ -16,7 +16,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import and_, case, select
 from sqlalchemy.orm import Session
 
 from cassandra.config import get_git_commit_sha, settings
@@ -131,22 +131,42 @@ def publish_projection(
     return row
 
 
+def _official_first_then_latest_version(query):
+    """Shared DISTINCT ON ordering for both current_projections_for_slate
+    and recent_current_projections: prefer the latest genuinely official
+    version (published, and not late per ADR 0008) per logical_key over a
+    later evaluated-only or late-published one, falling back to the
+    latest version overall when no official version exists yet for that
+    key (e.g. a game still hours out with only research-stage
+    evaluations logged so far).
+
+    Without this, "current" was purely `ORDER BY version DESC` -- any
+    later run, including one that happened to fire after a game's first
+    pitch, would silently become the displayed record even though its
+    own is_late_publication flag correctly marked it as not official.
+    The flag existed but was never actually enforced anywhere; running
+    the pipeline more than once a day (multiple intraday refreshes) would
+    have made that gap concretely worse rather than better."""
+    is_official = case(
+        (and_(Projection.published_at.isnot(None), Projection.is_late_publication.is_(False)), 1),
+        else_=0,
+    )
+    return query.order_by(Projection.logical_key, is_official.desc(), Projection.version.desc()).distinct(
+        Projection.logical_key
+    )
+
+
 def current_projections_for_slate(session: Session, game_ids: list[str]) -> list[Projection]:
-    """The latest version of every projection for the given games --
-    "current" derived by query, never by a mutable flag (ADR 0002)."""
+    """The latest -- preferring official, see
+    _official_first_then_latest_version -- version of every projection
+    for the given games. "Current" is still derived by query, never a
+    mutable flag (ADR 0002)."""
     if not game_ids:
         return []
-    subq = (
-        select(
-            Projection.logical_key,
-            Projection.projection_id,
-            Projection.version,
-        )
-        .where(Projection.game_id.in_(game_ids))
-        .order_by(Projection.logical_key, Projection.version.desc())
-        .distinct(Projection.logical_key)
-        .subquery()
+    base = select(Projection.logical_key, Projection.projection_id, Projection.version).where(
+        Projection.game_id.in_(game_ids)
     )
+    subq = _official_first_then_latest_version(base).subquery()
     stmt = select(Projection).join(subq, Projection.projection_id == subq.c.projection_id)
     return list(session.execute(stmt).scalars().all())
 
@@ -157,20 +177,14 @@ def version_history(session: Session, logical_key: str) -> list[Projection]:
 
 
 def recent_current_projections(session: Session, limit: int = 100) -> list[Projection]:
-    """The latest version of every projection across all slates, most
-    recently created first -- for the ledger view when no slate_date
-    filter is given. Same "current" derived-by-query pattern as
-    current_projections_for_slate, just without the game_ids filter."""
-    subq = (
-        select(
-            Projection.logical_key,
-            Projection.projection_id,
-            Projection.version,
-        )
-        .order_by(Projection.logical_key, Projection.version.desc())
-        .distinct(Projection.logical_key)
-        .subquery()
-    )
+    """The latest -- preferring official -- version of every projection
+    across all slates, most recently created first, for the ledger view
+    when no slate_date filter is given. Same "current" derived-by-query
+    pattern as current_projections_for_slate (see
+    _official_first_then_latest_version), just without the game_ids
+    filter."""
+    base = select(Projection.logical_key, Projection.projection_id, Projection.version)
+    subq = _official_first_then_latest_version(base).subquery()
     stmt = (
         select(Projection)
         .join(subq, Projection.projection_id == subq.c.projection_id)

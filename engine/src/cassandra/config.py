@@ -60,11 +60,15 @@ class Settings(BaseSettings):
     # settable via docker-compose.yml's passthrough (defaults to false
     # there too).
     auto_scheduler_enabled: bool = False
-    # Local hour (in operating_timezone, 0-23) after which the daily
-    # run_slate() fires, once per day. Grading is re-attempted on every
-    # scheduler tick regardless of this hour -- see scheduler.py's
-    # docstring for why the two have different cadences.
-    auto_run_hour_local: int = 7
+    # Comma-separated local hours (in operating_timezone, 0-23) at which
+    # run_slate() fires -- e.g. "7,12,16" for a morning/midday/pre-
+    # evening-game refresh, catching newly confirmed starters, updated
+    # lines, and weather throughout the day rather than once at a single
+    # fixed morning hour. Grading is re-attempted on every scheduler tick
+    # regardless -- see scheduler.py's docstring for why the two have
+    # different cadences. Parsed by orchestration/scheduler.py's
+    # parse_run_hours(), which never raises on a malformed entry.
+    auto_run_hours_local: str = "7,12,16"
 
     # adapters/lines_odds_api.py -- a real, licensed odds vendor (The Odds
     # API), used in place of adapters/lines_manual.py's manual drop-folder

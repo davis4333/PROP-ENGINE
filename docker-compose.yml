@@ -25,7 +25,7 @@ services:
       DECISION_EDGE_THRESHOLD: ${DECISION_EDGE_THRESHOLD:-0.05}
       ADMIN_SHARED_SECRET: ${ADMIN_SHARED_SECRET:-change-me-dev-only}
       AUTO_SCHEDULER_ENABLED: ${AUTO_SCHEDULER_ENABLED:-false}
-      AUTO_RUN_HOUR_LOCAL: ${AUTO_RUN_HOUR_LOCAL:-7}
+      AUTO_RUN_HOURS_LOCAL: ${AUTO_RUN_HOURS_LOCAL:-7,12,16}
       # Unset by default -- passed through only if present in the host's
       # .env (gitignored). Never given a literal default value here.
       ODDS_API_KEY: ${ODDS_API_KEY:-}

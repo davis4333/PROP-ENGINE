@@ -165,10 +165,14 @@ and take under a minute to set up.
    ```
 6. **Today populates itself automatically** — `replit_start.sh` runs the
    engine with `AUTO_SCHEDULER_ENABLED=true`
-   (`orchestration/scheduler.py`), which fires `run_slate()` once daily
-   (07:00 in `OPERATING_TIMEZONE` by default — override with
-   `AUTO_RUN_HOUR_LOCAL`) and re-attempts grading recent slates on every
-   poll tick, so no manual CLI/cron setup is needed for a live slate.
+   (`orchestration/scheduler.py`), which fires `run_slate()` at each
+   configured local hour (07:00/12:00/16:00 by default — override with
+   `AUTO_RUN_HOURS_LOCAL`, a comma-separated list) and re-attempts
+   grading recent slates on every poll tick, so no manual CLI/cron setup
+   is needed for a live slate. A run that happens to land after a game's
+   first pitch is automatically excluded from being that game's official
+   pick (`ledger/service.py`), so more daily runs only ever add
+   freshness, never risk silently overwriting an honest earlier one.
    6a. To see it immediately rather than waiting for the next scheduled
        run, trigger one by hand from the Replit Shell:
        ```bash

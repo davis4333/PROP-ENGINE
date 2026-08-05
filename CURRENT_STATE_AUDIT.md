@@ -43,6 +43,27 @@ against real (not mocked) data during this build.
   stub (`is_available=False` — see Provisional below), a manual/fixture
   lines importer, a real licensed-odds-vendor lines adapter, and MLB
   final box scores.
+- **Fixed a severe, launch-blocking bug** in `adapters/probable_pitchers_mlb.py`
+  found by an external repo audit (independently verified against the
+  real code and a real MLB schedule fixture before acting on it, not
+  trusted blindly): `is_confirmed` was computed as
+  `status.abstractGameState != "Preview"` — every game is "Preview"
+  until it starts, so this was `False` for essentially every normal
+  pregame probable-pitcher listing. `decision/engine.py`'s
+  `QUALITY_RISK_CODES` includes `STARTER_UNCONFIRMED`, which
+  unconditionally downgrades `decision_status` to `UNCERTAIN`/`NO_PLAY`
+  regardless of edge — so this silently forced **every pregame
+  projection to NO_PLAY, no matter how strong the model's edge was**,
+  since this platform went live. Real MLB schedule payloads have no
+  separate pregame confirmation signal beyond the named probable-pitcher
+  listing itself (verified against a real captured fixture) — a listed
+  probable IS the correct, complete pregame signal, and the code was
+  checking an unrelated field. Fixed to set `is_confirmed=True`
+  whenever this adapter writes a row (which already only happens for a
+  named, numeric-id probable pitcher); a genuine late scratch/swap is
+  still caught correctly by the existing point-in-time versioned-
+  ingestion mechanism, which never needed a separate confirmation flag
+  to work.
 - `adapters/lines_odds_api.py`: a real, licensed odds vendor (The Odds
   API — regulated US sportsbooks: FanDuel, Bovada, etc.), used for
   pitcher-strikeout lines when `ODDS_API_KEY` is configured
@@ -128,7 +149,22 @@ against real (not mocked) data during this build.
   an INSERT; "current" is always `DISTINCT ON (logical_key) ORDER BY
   version DESC`, never a mutable flag (ADR 0002); reproducibility hash
   over snapshot + features + model/policy versions + git commit (ADR
-  0010); late-publication flagging (ADR 0008).
+  0010); late-publication flagging (ADR 0008). **Fixed a real gap**
+  found by an external repo audit (independently verified before acting
+  on it): `is_late_publication` was being correctly computed and stored,
+  but "current" derivation ignored it entirely (`ORDER BY version DESC`
+  with no regard for the flag) — a run that happened to land after a
+  game's first pitch would have silently become that game's displayed
+  official pick, overriding an honest pre-lock one, with the flag
+  present on the row but never actually enforced anywhere.
+  `current_projections_for_slate`/`recent_current_projections` now
+  prefer the latest genuinely official (published, not late) version per
+  logical_key, falling back to the latest version overall when nothing
+  official exists yet for that key (so a game still hours out with only
+  evaluated-not-yet-decided rows still shows something, per the
+  transparency principle). This was a real, not hypothetical, gap: it's
+  exactly what running the scheduler more than once a day (see below)
+  would have made concretely worse rather than better if left unfixed.
 - Honest, append-only grading (`grading/service.py`): WIN/LOSS/PUSH/VOID/
   NO_PLAY, only grades published projections against `Final` box scores
   (ADR 0007), idempotent (a correction — a later Final box score for the
@@ -155,22 +191,30 @@ against real (not mocked) data during this build.
   off by default) in-process background thread for long-running
   deployments (Replit's is the motivating case — `replit_start.sh` turns
   it on) so Today populates and recent slates get graded without a human
-  running the CLI daily. `run_slate()` fires once per local calendar day
-  (`AUTO_RUN_HOUR_LOCAL`); `grade_slate_run()` is re-attempted every poll
-  tick across a trailing window since it's cheap and fully idempotent.
-  One failing tick (a transient MLB API outage, one bad slate date) never
-  blocks the others or kills the thread — each call is individually
-  caught and logged. Wired into `api/main.py` via FastAPI's `lifespan`;
-  confirmed empirically that `TestClient(app)` used without a `with`
-  block (this repo's API test fixture) never triggers `lifespan`, so the
-  scheduler never starts during tests regardless of the settings flag.
-  10 unit tests cover the gating logic and failure isolation with the
-  orchestration calls mocked out (no real DB/network in the test).
-  Reconciles its once-per-day trigger against the DB
-  (`_run_slate_already_succeeded_today`) on the first tick after a
-  restart, so a redeploy doesn't blindly re-trigger a real run_slate()
-  (and re-burn real, metered Odds API credits) if today's already
-  succeeded.
+  running the CLI daily. `run_slate()` fires at each configured local
+  hour in `AUTO_RUN_HOURS_LOCAL` (default `7,12,16` — morning/midday/
+  pre-evening-game, not just once at a single fixed hour, so newly
+  confirmed starters/updated lines/weather get picked up through the
+  day); `grade_slate_run()` is re-attempted every poll tick across a
+  trailing window since it's cheap and fully idempotent. One failing
+  tick (a transient MLB API outage, one bad slate date) never blocks the
+  others or kills the thread — each call is individually caught and
+  logged. Wired into `api/main.py` via FastAPI's `lifespan`; confirmed
+  empirically that `TestClient(app)` used without a `with` block (this
+  repo's API test fixture) never triggers `lifespan`, so the scheduler
+  never starts during tests regardless of the settings flag. Restart-
+  safety is fully DB-derived, not in-memory: each tick counts real
+  run_slate() successes on record for today
+  (`_run_slate_success_count_today`) and compares against how many
+  configured hours have already passed, so a redeploy can never trigger
+  a redundant run (re-burning real, metered Odds API credits) just
+  because in-process state reset to zero — this also means adding more
+  daily run hours never risked losing the original once-per-day
+  restart-safety property, it generalizes for free. Multiple daily runs
+  are only safe to have added because of ledger/service.py's official-
+  vs-late-publication precedence fix (below) — without it, a run that
+  happened to land after a game's first pitch could have silently
+  become that game's displayed "current" pick.
 - Admin's "Blocking Issues" panel (`api/routers/admin.py`) excludes
   `umpire_stub` (a permanent stand-in, always unavailable by design —
   see Provisional below) from ever being flagged as blocking; found live
