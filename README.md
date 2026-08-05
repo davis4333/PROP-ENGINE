@@ -180,11 +180,30 @@ and take under a minute to set up.
    script, which switches to a production `next build`/`next start` when
    Replit's `REPLIT_DEPLOYMENT` variable is set (done automatically by
    Replit Deployments).
+8. **After publishing, verify the public URL actually serves the
+   frontend, not the engine.** A real failure mode was hit during this
+   build: a Reserved VM deployment's public port defaulted to the
+   engine's `:8000` instead of the frontend's `:3000`, so the public
+   domain served raw JSON 404s (`{"detail":"Not Found"}`, `server:
+   uvicorn` in the response headers) for `/`, `/ledger`, and `/admin`
+   even though `/health` and `/api/today` worked fine (the engine does
+   have those routes). If you see that, go into the Deployment's
+   networking/port settings in Replit's UI and explicitly select port
+   `3000` as the public port — `.replit`'s own `[[ports]]` block already
+   maps `3000 -> 80`, but some deployment types let the UI override that
+   with its own separately-stored choice. `curl -I` against the deployed
+   root URL and confirm you get real HTML (or at least `content-type:
+   text/html`), not a JSON body.
 
-This configuration has been verified against a live Replit account
-(external Neon/Supabase Postgres, both services running under
-`replit_start.sh`): migrations applied cleanly, the demo slate seeded
-successfully, and Today/Ledger/Admin all rendered real data.
+This configuration has been exercised against a live Replit account,
+including a Reserved VM Deployment (external Neon/Supabase Postgres,
+`AUTO_SCHEDULER_ENABLED` firing a real daily `run_slate()`, real lines
+from `adapters/lines_odds_api.py`) — but it has NOT been trouble-free:
+see step 8 above for a real deployment-networking bug hit in production,
+and `scripts/replit_start.sh`'s comments for two Replit-Nix-specific
+startup fixes (no `pip` in the Nix Python package; Next.js 15's port
+flag not reliably forwarding through `pnpm run dev --`) that were lost
+on a prior GitHub sync and had to be reapplied.
 
 ## Repository layout
 

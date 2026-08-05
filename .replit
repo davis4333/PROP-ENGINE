@@ -17,4 +17,4 @@ externalPort = 80
 
 [deployment]
 run = ["bash", "scripts/replit_start.sh"]
-deploymentTarget = "cloudrun"
+deploymentTarget = "vm"

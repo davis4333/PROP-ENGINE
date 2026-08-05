@@ -265,6 +265,30 @@ to invent missing product decisions:
   doesn't install — `config.py`'s `Settings.database_url` now rewrites
   either scheme automatically, so a pasted-in connection string works
   without manual editing.
+- **Reserved VM Deployment** (`cassandrahits.replit.app`), with the real
+  odds vendor live: `AUTO_SCHEDULER_ENABLED` fired a real daily
+  `run_slate()` against the live MLB Stats API and The Odds API,
+  publishing real projections (some QUALIFIED, e.g. real DraftKings-
+  preferred lines like Troy Melton 5.5, Emerson Hancock 4.5), and
+  `grade_slate_run()` graded them once games went Final — all with no
+  manual CLI trigger. Two real Replit-Nix-environment-specific startup
+  bugs were found and fixed in `scripts/replit_start.sh`: the Nix
+  `python312` package ships no `pip` (switched engine dependency
+  install to `uv venv`/`uv pip install`, which doesn't need it), and
+  `pnpm run dev -- --port 3000` did not reliably forward the port flag
+  to Next.js 15 on Replit (switched to the `PORT` env var, which Next
+  reads directly). A third, more serious issue was found in production
+  and is **not yet confirmed fixed**: the deployed public URL's port
+  routing pointed at the engine (`:8000`) instead of the frontend
+  (`:3000`) — `/health` and `/api/today` worked, but `/`, `/ledger`, and
+  `/admin` all returned the engine's own JSON 404 instead of the actual
+  pages. This is a Replit Deployment networking/port-selection setting,
+  not an application bug; `.replit`'s `[[ports]]` block already maps
+  `3000 -> 80` correctly, but this deployment type appears to let the
+  Replit UI's own port choice override that. Needs the deployment's
+  public port explicitly reset to `3000` and reverified with a fresh
+  `curl -I` against the root URL before this can be called fully working
+  end to end.
 
 ## Not verified against real infrastructure this session
 

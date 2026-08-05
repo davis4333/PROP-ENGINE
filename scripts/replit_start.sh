@@ -18,10 +18,22 @@ if [ -z "${DATABASE_URL:-}" ]; then
   exit 1
 fi
 
+echo "==> Ensuring uv is available"
+# Replit's Nix python312 package does not ship pip, so a plain
+# `python3 -m venv` + `pip install` fails there -- uv bundles its own
+# resolver/installer and doesn't need system pip at all. Installed via
+# the official script (not relying on a nixpkgs `uv` derivation being
+# present in this channel) and only if not already on PATH.
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+export PATH="$HOME/.local/bin:$PATH"
+
 echo "==> Installing engine dependencies"
-python3 -m venv "$REPO_ROOT/engine/.venv" --clear=false 2>/dev/null || true
-"$REPO_ROOT/engine/.venv/bin/pip" install --quiet --upgrade pip
-"$REPO_ROOT/engine/.venv/bin/pip" install --quiet -e "$REPO_ROOT/engine[dev]"
+if [ ! -d "$REPO_ROOT/engine/.venv" ]; then
+  uv venv "$REPO_ROOT/engine/.venv"
+fi
+uv pip install --quiet --python "$REPO_ROOT/engine/.venv/bin/python" -e "$REPO_ROOT/engine[dev]"
 
 echo "==> Applying database migrations"
 (cd "$REPO_ROOT/engine" && .venv/bin/python -m alembic upgrade head)
@@ -40,8 +52,12 @@ echo "==> Installing frontend dependencies"
 
 if [ -n "${REPLIT_DEPLOYMENT:-}" ]; then
   echo "==> Production build + start (Replit Deployment)"
-  (cd "$REPO_ROOT/web" && pnpm run build && pnpm run start -- --port 3000)
+  # PORT env var, not `-- --port 3000` -- the latter doesn't reliably
+  # reach Next.js 15's CLI through pnpm's script-arg forwarding on
+  # Replit; PORT is Next's own documented port override and isn't
+  # dependent on that forwarding working.
+  (cd "$REPO_ROOT/web" && pnpm run build && PORT=3000 pnpm run start)
 else
   echo "==> Dev server (interactive Repl workspace)"
-  (cd "$REPO_ROOT/web" && pnpm run dev -- --port 3000)
+  (cd "$REPO_ROOT/web" && PORT=3000 pnpm run dev)
 fi
