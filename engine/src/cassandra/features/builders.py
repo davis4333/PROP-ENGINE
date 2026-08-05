@@ -83,11 +83,22 @@ def compute_rest_days(game_logs_latest_first: list[RawPitcherGameLog], cutoff_at
 
 
 def build_features(entry: PitcherSlateEntry, cutoff_at: datetime) -> dict[str, Any]:
-    bf_result = compute_expected_bf(entry.game_logs)
-    k_rate_result = compute_recent_k_rate(entry.game_logs)
+    # compute_expected_bf/compute_recent_k_rate/compute_rest_days all
+    # assume "latest start first" (their decay-weighting indexes by
+    # recency rank). entry.game_logs comes from pit/asof.py's
+    # all_as_of(), ordered by (observed_at, ingested_at) -- but every
+    # game-log row from a single adapter fetch shares the same
+    # observed_at/ingested_at (both stamped once per fetch call, not
+    # per historical start), so that ordering has no power to rank the
+    # starts themselves by actual recency. Sorting explicitly by
+    # stat_date here is what actually satisfies the "latest first"
+    # contract these functions rely on.
+    game_logs_latest_first = sorted(entry.game_logs, key=lambda g: g.stat_date, reverse=True)
+    bf_result = compute_expected_bf(game_logs_latest_first)
+    k_rate_result = compute_recent_k_rate(game_logs_latest_first)
     park_k_factor = float(entry.park_factor.k_factor) if entry.park_factor else NEUTRAL_PARK_FACTOR
     weather_adjustment = compute_weather_adjustment(entry.weather)
-    rest_days = compute_rest_days(entry.game_logs, cutoff_at)
+    rest_days = compute_rest_days(game_logs_latest_first, cutoff_at)
 
     weak_sample = bf_result.tier != "recent_weighted" or k_rate_result.tier != "recent_weighted"
 

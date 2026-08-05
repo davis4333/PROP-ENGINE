@@ -143,3 +143,35 @@ def test_build_features_produces_full_blob(monkeypatch):
     assert features["umpire_available"] is False
     assert features["role_stability_flag"] is False
     assert features["opponent_adjustment"] == 1.00
+
+
+def test_build_features_sorts_game_logs_regardless_of_input_order():
+    # all_as_of() orders by (observed_at, ingested_at), both of which are
+    # identical across every row from a single adapter fetch (see
+    # pitcher_game_logs_mlb.py) -- so entry.game_logs is not guaranteed
+    # to arrive latest-start-first. build_features must sort by
+    # stat_date itself rather than trust caller order, or the
+    # decay-weighted recency calculation silently weights the wrong
+    # starts as "most recent."
+    oldest_first = [_log("2023-05-30", 25, 8), _log("2023-06-05", 22, 6), _log("2023-06-10", 24, 7)]
+    latest_first = [_log("2023-06-10", 24, 7), _log("2023-06-05", 22, 6), _log("2023-05-30", 25, 8)]
+
+    def _features_for(logs: list[RawPitcherGameLog]) -> dict:
+        entry = PitcherSlateEntry(
+            game=None,
+            team_mlb_id=141,
+            probable=None,
+            game_logs=logs,
+            park_factor=None,
+            weather=None,
+            lines=[],
+            quality_findings=[],
+        )
+        return build_features(entry, NOW)
+
+    oldest_first_features = _features_for(oldest_first)
+    latest_first_features = _features_for(latest_first)
+
+    assert oldest_first_features["expected_bf"] == latest_first_features["expected_bf"]
+    assert oldest_first_features["recent_k_rate"] == latest_first_features["recent_k_rate"]
+    assert oldest_first_features["rest_days"] == latest_first_features["rest_days"] == 5
