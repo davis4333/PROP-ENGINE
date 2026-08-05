@@ -29,45 +29,81 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
-echo "==> Installing engine dependencies"
-if [ ! -d "$REPO_ROOT/engine/.venv" ]; then
-  uv venv "$REPO_ROOT/engine/.venv"
-fi
-uv pip install --quiet --python "$REPO_ROOT/engine/.venv/bin/python" -e "$REPO_ROOT/engine[dev]"
-
-echo "==> Applying database migrations"
-(cd "$REPO_ROOT/engine" && .venv/bin/python -m alembic upgrade head)
-
-echo "==> Starting the engine API on 127.0.0.1:8000 (auto-scheduler enabled)"
-# AUTO_SCHEDULER_ENABLED: a long-running Repl should populate Today and
-# grade recent slates on its own -- see orchestration/scheduler.py. Off
-# by default everywhere else (config.py) since a one-off CLI/test run of
-# the engine shouldn't silently start hitting the live MLB API.
-#
-# --host 127.0.0.1, not 0.0.0.0: the frontend reaches the engine over
-# localhost on this same machine/container (see .replit's API_BASE_URL
-# and web/next.config.ts's rewrite) -- there's no reason for the engine
-# to be reachable from outside the Repl at all. A real production bug
-# was traced to this: with the engine also listening on 0.0.0.0, a
-# Reserved VM Deployment's public-port auto-detection picked :8000
-# (the engine) instead of :3000 (the frontend), so the public URL served
-# raw API JSON/404s instead of real pages. Binding loopback-only removes
-# the engine from being a public-port candidate at all.
-(cd "$REPO_ROOT/engine" && AUTO_SCHEDULER_ENABLED=true .venv/bin/uvicorn cassandra.api.main:app --host 127.0.0.1 --port 8000) &
-ENGINE_PID=$!
-trap 'kill $ENGINE_PID 2>/dev/null || true' EXIT
-
-echo "==> Installing frontend dependencies"
-(cd "$REPO_ROOT/web" && pnpm install --frozen-lockfile)
-
 if [ -n "${REPLIT_DEPLOYMENT:-}" ]; then
-  echo "==> Production build + start (Replit Deployment)"
+  # =========================================================
+  # DEPLOYMENT MODE
+  # =========================================================
+  # node_modules and .next were pre-built by the deployment build
+  # step (see [deployment] build in .replit). Run engine setup in
+  # the background so Next.js can start immediately and open port
+  # 3000 within Replit's 60-second port-open window.
+  #
+  # Timeline (target):
+  #   t+0s  VM boots, script starts
+  #   t+3s  `next start` opens port 3000  <-- healthcheck satisfied
+  #   t+35s engine ready on 127.0.0.1:8000 (background)
+  (
+    echo "==> [engine] Installing engine dependencies"
+    if [ ! -d "$REPO_ROOT/engine/.venv" ]; then
+      uv venv "$REPO_ROOT/engine/.venv"
+    fi
+    uv pip install --quiet \
+      --python "$REPO_ROOT/engine/.venv/bin/python" \
+      -e "$REPO_ROOT/engine[dev]"
+
+    echo "==> [engine] Applying database migrations"
+    (cd "$REPO_ROOT/engine" && .venv/bin/python -m alembic upgrade head)
+
+    echo "==> [engine] Starting engine API on 127.0.0.1:8000 (auto-scheduler enabled)"
+    # AUTO_SCHEDULER_ENABLED: fires run_slate() at 07:00 ET and re-grades
+    # every 15 min. Off by default in config.py so that CLI/test runs
+    # of the engine don't silently hit live MLB APIs.
+    #
+    # --host 127.0.0.1, not 0.0.0.0: the frontend reaches the engine
+    # over localhost (see .replit API_BASE_URL and web/next.config.ts).
+    # Binding loopback-only prevents Replit's port-detector from
+    # picking up port 8000 as the public endpoint instead of 3000.
+    (cd "$REPO_ROOT/engine" && \
+      AUTO_SCHEDULER_ENABLED=true \
+      .venv/bin/uvicorn cassandra.api.main:app \
+        --host 127.0.0.1 --port 8000)
+  ) &
+  ENGINE_PID=$!
+  trap 'kill $ENGINE_PID 2>/dev/null || true' EXIT
+
+  echo "==> Production start (Next.js pre-built in deployment build step)"
   # PORT env var, not `-- --port 3000` -- the latter doesn't reliably
   # reach Next.js 15's CLI through pnpm's script-arg forwarding on
   # Replit; PORT is Next's own documented port override and isn't
   # dependent on that forwarding working.
-  (cd "$REPO_ROOT/web" && pnpm run build && PORT=3000 pnpm run start)
+  (cd "$REPO_ROOT/web" && PORT=3000 pnpm run start)
+
 else
+  # =========================================================
+  # DEV / WORKSPACE MODE
+  # =========================================================
+  echo "==> Installing engine dependencies"
+  if [ ! -d "$REPO_ROOT/engine/.venv" ]; then
+    uv venv "$REPO_ROOT/engine/.venv"
+  fi
+  uv pip install --quiet \
+    --python "$REPO_ROOT/engine/.venv/bin/python" \
+    -e "$REPO_ROOT/engine[dev]"
+
+  echo "==> Applying database migrations"
+  (cd "$REPO_ROOT/engine" && .venv/bin/python -m alembic upgrade head)
+
+  echo "==> Starting the engine API on 127.0.0.1:8000 (auto-scheduler enabled)"
+  (cd "$REPO_ROOT/engine" && \
+    AUTO_SCHEDULER_ENABLED=true \
+    .venv/bin/uvicorn cassandra.api.main:app \
+      --host 127.0.0.1 --port 8000) &
+  ENGINE_PID=$!
+  trap 'kill $ENGINE_PID 2>/dev/null || true' EXIT
+
+  echo "==> Installing frontend dependencies"
+  (cd "$REPO_ROOT/web" && pnpm install --frozen-lockfile)
+
   echo "==> Dev server (interactive Repl workspace)"
   (cd "$REPO_ROOT/web" && PORT=3000 pnpm run dev)
 fi
