@@ -73,18 +73,30 @@ against real (not mocked) data during this build.
   `player_mlb_id`s via the `players` table) — a name with no match is
   silently skipped, never guessed at, matching every other adapter's
   "absence is a first-class outcome" contract. Filters events to the
-  slate's date window before requesting per-event odds (a metered call)
-  to avoid burning API credits on games outside the slate. Prefers
-  DraftKings when it's posted a given player's market, falling back to
-  whichever other bookmaker has it. Logs and, below a low-quota
-  threshold, surfaces a real warning for the vendor's remaining
-  monthly-request balance (`x-requests-remaining` response header) — the
-  free tier is 500 requests/month, which a daily scheduled run across a
-  full MLB slate can exceed; a paid tier or reduced polling is a real
-  operating cost to budget for, not a hidden one. Tested against real
-  captured responses (`tests/fixtures/odds_api/`) with respx (10 unit
-  tests), plus a full `run_slate()` integration test proving the branch
-  actually gets used when configured. **This is NOT Underdog's own DFS
+  slate's own games' real start times (a small buffer either side, passed
+  in as `game_start_times` by `orchestration/run_slate.py`) before
+  requesting per-event odds (a metered call), not a blanket multi-day
+  window — narrowed after a live audit found the original slate-date-based
+  window could fetch odds for roughly 3 days' worth of MLB games on every
+  single call. Prefers DraftKings when it's posted a given player's
+  market, falling back to whichever other bookmaker has it. Logs and,
+  below a low-quota threshold, surfaces a real warning for the vendor's
+  remaining monthly-request balance (`x-requests-remaining` response
+  header). The free tier is 500 requests/month — against that,
+  `orchestration/run_slate.py` throttles the metered odds fetch itself
+  (not the rest of the pipeline) to at most once per real calendar day
+  regardless of how many times `run_slate()` is scheduled that day
+  (`_odds_api_already_succeeded_today`, keyed off `SourceHealth`), added
+  once the scheduler's multi-run-per-day cadence made a naive per-run
+  fetch arithmetically impossible to sustain for a month on the free
+  tier. Even at once/day, a full slate's worth of calls is close to the
+  free tier's daily fair share (500/30 ≈ 16.6/day) — a paid tier is a
+  real operating cost to budget for, not a hidden one. Tested against
+  real captured responses (`tests/fixtures/odds_api/`) with respx (14
+  unit tests, including the narrowed-window behavior), plus full
+  `run_slate()` integration tests proving both the odds-API branch gets
+  used when configured and the once-per-day throttle actually skips a
+  second same-day call. **This is NOT Underdog's own DFS
   pick'em lines** — Underdog has no public/authorized API (see
   Provisional below); these are real regulated-sportsbook strikeout
   totals, a different but legitimate market. Runs *instead of* the

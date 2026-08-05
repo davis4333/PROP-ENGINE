@@ -27,9 +27,19 @@ found and fixed after a live adversarial point-in-time/correctness audit
 traced exactly this failure mode.
 
 Fetching odds is a per-event, credit-metered call, so events are first
-filtered to the slate's date window (same window games_for_slate_date
-uses) before requesting their odds -- avoids burning API credits on
-games days away from this slate.
+filtered down to just the slate's own games' real start times (passed in
+via `fetch(..., game_start_times=[...])`, a small buffer either side for
+commence_time/scheduled_start_utc clock drift) before requesting their
+odds -- avoids burning API credits on games days away from this slate.
+A missing/empty `game_start_times` falls back to a generous slate-day
+window (same window games_for_slate_date uses) rather than raising, but
+every real caller (orchestration/run_slate.py) supplies the precise
+list -- found and narrowed after a live audit showed the previous
+whole-slate-window approach could fetch odds for roughly 3 days' worth
+of MLB games (up to ~45 events) on every single scheduled run, which
+against The Odds API's 500-requests/month free tier would exhaust the
+month's quota in days once the scheduler's multi-run-per-day cadence
+(orchestration/scheduler.py) shipped.
 
 Prefers DraftKings when it has posted a given player's market, falling
 back to whichever other bookmaker has it; cross-book consensus is a
@@ -62,12 +72,13 @@ EVENTS_URL = f"{API_BASE}/events"
 MARKET = "pitcher_strikeouts"
 PREFERRED_BOOKMAKER = "draftkings"
 LOW_QUOTA_WARNING_THRESHOLD = 20
+GAME_TIME_WINDOW_BUFFER = timedelta(hours=6)
 
 
 class LinesOddsApiAdapter(SourceAdapter):
     kind = "lines"
     source_name = "odds_api"
-    adapter_version = "0.1.0"
+    adapter_version = "0.2.0"
     raw_model = RawLine
 
     def __init__(self, api_key: str, http_client: httpx.Client | None = None) -> None:
@@ -118,8 +129,13 @@ class LinesOddsApiAdapter(SourceAdapter):
             )
         _check_quota(events_resp, warnings)
 
-        window_start = datetime.combine(slate_date, time.min, tzinfo=UTC) - timedelta(days=1)
-        window_end = window_start + timedelta(days=3)
+        game_start_times: list[datetime] = kwargs.get("game_start_times") or []
+        if game_start_times:
+            window_start = min(game_start_times) - GAME_TIME_WINDOW_BUFFER
+            window_end = max(game_start_times) + GAME_TIME_WINDOW_BUFFER
+        else:
+            window_start = datetime.combine(slate_date, time.min, tzinfo=UTC) - timedelta(days=1)
+            window_end = window_start + timedelta(days=3)
         records: list[RawRecord] = []
         matched_names: set[str] = set()
 

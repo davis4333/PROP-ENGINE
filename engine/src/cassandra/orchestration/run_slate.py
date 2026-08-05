@@ -41,7 +41,7 @@ from cassandra.adapters.probable_pitchers_mlb import ProbablePitchersMLBAdapter
 from cassandra.adapters.schedule_mlb import ScheduleMLBAdapter
 from cassandra.adapters.umpire_stub import UmpireStubAdapter
 from cassandra.adapters.weather_openmeteo import WeatherOpenMeteoAdapter
-from cassandra.config import settings
+from cassandra.config import operating_tz, settings
 from cassandra.db.models.audit import AuditEvent
 from cassandra.db.models.features import FeatureSet, FeatureValue
 from cassandra.db.models.grading import Grade
@@ -49,6 +49,7 @@ from cassandra.db.models.identity import Game, Player, Venue
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
 from cassandra.db.models.projection import Projection
 from cassandra.db.models.raw import RawProbablePitcher
+from cassandra.db.models.sources import SourceHealth
 from cassandra.decision.engine import Decision, decide
 from cassandra.features.builders import FEATURE_SET_VERSION, build_features
 from cassandra.grading.service import grade_slate
@@ -479,9 +480,33 @@ def ingest_slate(
         ingest(session, UmpireStubAdapter(), slate_date=slate_date, as_of=cutoff_at, run_id=run_id)
     )
 
-    results.append(_ingest_lines(session, slate_date, cutoff_at, client, probables, lines_drop_dir, run_id))
+    results.append(
+        _ingest_lines(session, slate_date, cutoff_at, client, probables, games, lines_drop_dir, run_id)
+    )
 
     return results
+
+
+# The Odds API's free tier is a 500-requests/month budget -- one full
+# slate's worth of odds calls (roughly one per game) already eats most of
+# a day's fair share of that (500/30 ~= 16.6/day), so fetching it fresh on
+# every one of the scheduler's several daily run_slate() calls would blow
+# the month's quota in days, not weeks (see adapters/lines_odds_api.py's
+# docstring). This throttle makes the metered odds fetch happen at most
+# once per real calendar day regardless of how many times run_slate() is
+# scheduled -- schedule/probables/weather still refresh on every
+# configured run for freshness, only the quota-scarce vendor call is
+# capped. Keyed off SourceHealth.last_success_at's calendar date (not
+# slate_date) deliberately: The Odds API only ever has live/near-term
+# events, never historical ones, so "already got real odds today" is a
+# meaningful question for a live production run in a way it wouldn't be
+# for a historical slate replay (which couldn't get real odds either way).
+def _odds_api_already_succeeded_today(session: Session) -> bool:
+    health = session.get(SourceHealth, LinesOddsApiAdapter.source_name)
+    if health is None or health.last_success_at is None:
+        return False
+    today_local = datetime.now(UTC).astimezone(operating_tz()).date()
+    return health.last_success_at.astimezone(operating_tz()).date() == today_local
 
 
 def _ingest_lines(
@@ -490,6 +515,7 @@ def _ingest_lines(
     cutoff_at: datetime,
     client: httpx.Client,
     probables: list[RawProbablePitcher],
+    games: list[Game],
     lines_drop_dir: Path | None,
     run_id: str,
 ) -> IngestResult:
@@ -504,6 +530,17 @@ def _ingest_lines(
             slate_date=slate_date,
             as_of=cutoff_at,
             run_id=run_id,
+        )
+
+    if _odds_api_already_succeeded_today(session):
+        return IngestResult(
+            source_name=LinesOddsApiAdapter.source_name,
+            records_written=0,
+            is_available=True,
+            warnings=[
+                "Skipped: real odds already fetched successfully once today -- "
+                "throttled to conserve the metered monthly quota"
+            ],
         )
 
     player_mlb_ids = sorted({p.player_mlb_id for p in probables})
@@ -521,6 +558,8 @@ def _ingest_lines(
         for p in probables
         if p.player_mlb_id in names_by_mlb_id
     ]
+    relevant_game_pks = {p["mlb_game_pk"] for p in probables_context}
+    game_start_times = [g.scheduled_start_utc for g in games if g.mlb_game_pk in relevant_game_pks]
     return ingest(
         session,
         LinesOddsApiAdapter(api_key=settings.odds_api_key, http_client=client),
@@ -528,6 +567,7 @@ def _ingest_lines(
         as_of=cutoff_at,
         run_id=run_id,
         probables=probables_context,
+        game_start_times=game_start_times,
     )
 
 

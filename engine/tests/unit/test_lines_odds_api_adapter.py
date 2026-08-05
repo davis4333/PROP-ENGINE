@@ -9,7 +9,7 @@ only to keep the number of per-event mocks manageable, not synthesized).
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
@@ -122,6 +122,53 @@ def test_events_outside_the_slate_window_are_never_requested():
 
     result = LinesOddsApiAdapter(api_key="test-key", http_client=httpx.Client()).fetch(
         slate_date=date(2023, 6, 15), probables=probables
+    )
+
+    assert result.is_available is False
+    assert result.records == []
+
+
+@respx.mock
+def test_game_start_times_narrows_the_window_and_still_matches_real_games():
+    # game_start_times (the real caller's precise per-slate window, added
+    # after a live audit found the default slate_date-based window fetches
+    # odds for roughly 3 days' worth of events on every call -- unaffordable
+    # against the free tier's 500-requests/month budget once the scheduler
+    # started running several times a day) must still find real games whose
+    # commence_time falls inside it.
+    _mock_events()
+    respx.get(f"{API_BASE}/events/{ORIOLES_ANGELS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=_load("event_odds_no_props_yet.json"))
+    )
+    respx.get(f"{API_BASE}/events/{YANKEES_CARDINALS_EVENT_ID}/odds").mock(
+        return_value=httpx.Response(200, json=_load("event_odds_with_props.json"))
+    )
+    probables = [{"player_mlb_id": 111, "mlb_game_pk": 999888, "full_name": "Andre Pallante"}]
+    game_start_times = [
+        datetime(2026, 8, 5, 22, 36, tzinfo=UTC),
+        datetime(2026, 8, 5, 23, 6, tzinfo=UTC),
+    ]
+
+    result = LinesOddsApiAdapter(api_key="test-key", http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, probables=probables, game_start_times=game_start_times
+    )
+
+    assert result.is_available
+    assert len(result.records) == 1
+
+
+@respx.mock
+def test_game_start_times_excludes_events_far_outside_the_narrow_window():
+    # No per-event odds routes mocked at all -- if the adapter requested
+    # one anyway (because it fell back to the generous slate-day window
+    # instead of honoring the precise game_start_times), respx would raise
+    # on the unmocked request.
+    _mock_events()
+    probables = [{"player_mlb_id": 111, "mlb_game_pk": 999888, "full_name": "Andre Pallante"}]
+    game_start_times = [datetime(2026, 8, 10, 22, 0, tzinfo=UTC)]  # 5 days after the real events
+
+    result = LinesOddsApiAdapter(api_key="test-key", http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, probables=probables, game_start_times=game_start_times
     )
 
     assert result.is_available is False

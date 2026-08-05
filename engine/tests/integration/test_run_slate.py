@@ -264,3 +264,94 @@ def test_run_slate_uses_odds_api_lines_when_configured(db_session, monkeypatch):
     no_line_projs = [p for p in run_result.projections_published if p.player_id != kikuchi_id]
     assert no_line_projs
     assert all(p.decision == "NO_PLAY" and p.line is None for p in no_line_projs)
+
+
+def _mock_odds_events_and_odds() -> tuple[respx.Route, respx.Route]:
+    events_route = respx.get(ODDS_EVENTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "test_event_1",
+                    "sport_key": "baseball_mlb",
+                    "sport_title": "MLB",
+                    "commence_time": "2023-06-15T17:05:00Z",
+                    "home_team": "Baltimore Orioles",
+                    "away_team": "Toronto Blue Jays",
+                }
+            ],
+        )
+    )
+    odds_route = respx.get(f"{ODDS_API_BASE}/events/test_event_1/odds").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "test_event_1",
+                "bookmakers": [
+                    {
+                        "key": "fanduel",
+                        "markets": [
+                            {
+                                "key": "pitcher_strikeouts",
+                                "outcomes": [
+                                    {
+                                        "name": "Over",
+                                        "description": "Yusei Kikuchi",
+                                        "price": -110,
+                                        "point": 6.5,
+                                    },
+                                    {
+                                        "name": "Under",
+                                        "description": "Yusei Kikuchi",
+                                        "price": -110,
+                                        "point": 6.5,
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
+    return events_route, odds_route
+
+
+@respx.mock
+def test_run_slate_throttles_odds_api_to_once_per_real_calendar_day(db_session, monkeypatch):
+    """A second run_slate() call the same real day must not re-hit the
+    metered Odds API once it has already succeeded once today --
+    orchestration/run_slate.py's _odds_api_already_succeeded_today()
+    throttle, added after the scheduler's multi-run-per-day cadence made a
+    naive re-fetch on every run infeasible against the free tier's
+    500-requests/month budget (see adapters/lines_odds_api.py's
+    docstring). The line ingested by the first run must still be visible
+    to the second run's projection -- throttling must not lose access to
+    already-fetched data, only avoid a redundant re-fetch."""
+    monkeypatch.setattr(settings, "odds_api_key", "test-key")
+
+    respx.get(f"{MLB_STATS_API_BASE}/schedule").mock(
+        return_value=httpx.Response(200, json=_load("schedule_2023-06-15.json"))
+    )
+    respx.route(url__regex=rf"{re.escape(MLB_STATS_API_BASE)}/people/\d+/stats").mock(
+        side_effect=_gamelog_side_effect
+    )
+    respx.get(ARCHIVE_URL).mock(return_value=httpx.Response(200, json=_load("weather_archive_camden.json")))
+    events_route, odds_route = _mock_odds_events_and_odds()
+
+    client = httpx.Client()
+    cutoff_at = datetime.now(UTC) + timedelta(minutes=2)
+
+    first = run_slate(db_session, SLATE_DATE, cutoff_at, http_client=client, publish=True)
+    db_session.flush()
+    assert events_route.call_count == 1
+    assert odds_route.call_count == 1
+    kikuchi_id = mlb_player_id(KIKUCHI_MLB_ID)
+    assert next(p for p in first.projections_published if p.player_id == kikuchi_id).line == 6.5
+
+    second = run_slate(db_session, SLATE_DATE, cutoff_at, http_client=client, publish=True)
+    db_session.flush()
+    assert events_route.call_count == 1  # not called again -- throttled
+    assert odds_route.call_count == 1
+    second_kikuchi_proj = next(p for p in second.projections_published if p.player_id == kikuchi_id)
+    assert second_kikuchi_proj.line == 6.5  # first run's line is still usable
