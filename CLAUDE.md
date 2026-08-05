@@ -29,6 +29,15 @@
    handbook or `DECISION_LEDGER.csv`. Build around them with a clean seam
    (see the adapter contract) and document the placeholder, don't guess
    silently.
+8. Historical backfill data (`historical_pitcher_starts`,
+   `historical_lineups`, `backfill_runs`, `backfill_items` — see
+   `docs/HISTORICAL_BACKFILL_DESIGN.md`) is a separate subsystem from the
+   live pipeline. Never read it from `pit/asof.py`, `features/`,
+   `models/`, or `decision/engine.py` — its `ingested_at` is always real
+   backfill-run time, not the historical date it describes, so it cannot
+   honestly satisfy the live leakage gate. Never write historical/
+   reconstructed evaluations to `projections`/`grades` — label them
+   `BACKTEST`/`HISTORICAL_RECONSTRUCTION`/`PAPER`, never `LIVE`.
 
 ## Do-not-do list
 

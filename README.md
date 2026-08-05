@@ -99,6 +99,20 @@ cd engine
 .venv/bin/cassandra --help                        # ingest / snapshot / run-slate / grade
 ```
 
+## Historical backfill (2023-present)
+
+A separate, resumable, idempotent backfill collects real historical MLB
+schedule/game, actual-starter, pitcher-outcome, and lineup data --
+distinct from the live daily pipeline above and from its `raw_*` tables.
+See `docs/HISTORICAL_BACKFILL_RUNBOOK.md` for full detail.
+
+```bash
+cd engine
+.venv/bin/cassandra backfill-mlb --start-date 2023-01-01   # resumable by default
+.venv/bin/cassandra backfill-status
+.venv/bin/cassandra audit-historical-coverage --start-date 2023-01-01
+```
+
 ## Verifying everything works
 
 ```bash

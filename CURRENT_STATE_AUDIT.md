@@ -241,6 +241,56 @@ against real (not mocked) data during this build.
   treatment, a smarter time-aware threshold, or is fine as-is is a real
   product call, not an engineering one.
 
+### Historical backfill (2023-present)
+
+See `docs/HISTORICAL_BACKFILL_DESIGN.md`, `docs/HISTORICAL_DATA_
+DICTIONARY.md`, `docs/HISTORICAL_BACKFILL_RUNBOOK.md`, and
+`docs/HISTORICAL_COVERAGE_REPORT.md` for full detail. Deliberately a
+separate subsystem from the live pipeline above -- writes to its own
+tables (`historical_pitcher_starts`, `historical_lineups`,
+`backfill_runs`, `backfill_items`), never to the live `raw_*` tables,
+and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
+(verified by an AST-based structural test, not just documented intent).
+
+- **Real, resumable, idempotent** (`engine/src/cassandra/historical/
+  backfill.py`): one schedule range call per season slice, one live-feed
+  call per game, upsert-by-natural-key for both pitcher outcomes and
+  lineups. Verified against the live MLB Stats API (not just mocks)
+  before writing tests -- a real 15-game single-day run, a real
+  415-game full-month run, and a proven instant no-op rerun of an
+  already-completed range (zero new HTTP calls, zero duplicate rows).
+- Found and fixed a real bug this way: schedule-discovery idempotency
+  was originally keyed on season alone, so an early narrow-window
+  discovery could silently "cover" (and permanently skip) a later wider
+  request for the same season. Fixed by keying on the exact requested
+  window; regression test added.
+- CLI: `backfill-mlb`, `backfill-status`, `retry-backfill-failures`,
+  `audit-historical-coverage`.
+- Collects: schedule/games (all game types, classified via the new
+  `games.game_type`/`games.season` columns), actual starters (from
+  `pitching.gamesStarted`, explicitly NOT conflated with the live
+  pipeline's pregame-confirmed-probable-pitcher concept --
+  `pregame_starter_confirmation_captured` is always `False` on backfilled
+  rows), full pitcher-outcome normalization, and starting lineups
+  (labeled `HISTORICAL_ACTUAL`, since there's no trustworthy pregame-
+  availability timestamp for them in the free API).
+- **Not yet collected/implemented in this pass** (reported honestly, not
+  silently omitted -- also surfaced by `audit-historical-coverage`
+  itself): pitch-level/plate-appearance detail, historical weather,
+  park factors computed from prior completed games, rest/workload
+  derived features, opponent rolling strikeout context, the
+  `STRICT_LIVE_COMPATIBLE`/`RETROSPECTIVE_ENRICHED` training-dataset
+  builder, and any model training/walk-forward evaluation. See
+  `docs/TRAINING_READINESS_REPORT.md` for the explicit "not ready to
+  train" statement and what's blocking it.
+- Backfill run status at the point this batch of work was committed:
+  see the session's final report / `docs/HISTORICAL_COVERAGE_REPORT.md`
+  for the exact numbers -- a full 2023-present backfill (~11,100 games
+  discovered) takes on the order of an hour or more against the free,
+  unmetered MLB Stats API and was still in progress when this session's
+  context ended; it is resumable, so `cassandra backfill-mlb --resume`
+  with the same date range continues it exactly where it left off.
+
 ### Fixture demo slate
 
 - A real historical slate (2023-06-15) with a hand-picked
