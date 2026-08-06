@@ -93,10 +93,11 @@ def _feed_payload(
     game_pk: int,
     status: str = "Final",
     official_date: str = "2023-04-03",
+    detailed_state: str = "Final",
 ) -> dict:
     return {
         "gameData": {
-            "status": {"abstractGameState": status},
+            "status": {"abstractGameState": status, "detailedState": detailed_state},
             "datetime": {"officialDate": official_date},
         },
         "liveData": {
@@ -493,6 +494,44 @@ def test_process_game_feed_marks_not_yet_final_as_skipped_not_failed(historical_
         select(BackfillItem).where(BackfillItem.domain == "game_feed", BackfillItem.work_key == str(GAME_A))
     ).scalar_one()
     assert item.status == "skipped"
+    rows = (
+        historical_session.execute(
+            select(HistoricalPitcherStart).where(HistoricalPitcherStart.mlb_game_pk == GAME_A)
+        )
+        .scalars()
+        .all()
+    )
+    assert rows == []
+
+
+@respx.mock
+def test_process_game_feed_marks_a_cancelled_game_as_skipped_not_failed(historical_session):
+    # Regression for a real finding from the running production backfill:
+    # a rained-out spring training game reports abstractGameState=Final
+    # (MLB considers it "closed out") but genuinely has no pitching lines
+    # -- that's an honest exclusion (no game was played), not a
+    # processing failure, and must be classified/reported as such.
+    respx.get(LIVE_FEED_URL_A).mock(
+        return_value=httpx.Response(
+            200, json=_feed_payload(game_pk=GAME_A, status="Final", detailed_state="Cancelled: Rain")
+        )
+    )
+    run = _run(historical_session)
+    outcome = process_game_feed(
+        historical_session,
+        httpx.Client(),
+        game_pk=GAME_A,
+        source_id=BACKFILL_SOURCE_NAME,
+        config=_config(),
+        run=run,
+    )
+
+    assert outcome == "skipped"
+    item = historical_session.execute(
+        select(BackfillItem).where(BackfillItem.domain == "game_feed", BackfillItem.work_key == str(GAME_A))
+    ).scalar_one()
+    assert item.status == "skipped"
+    assert "Cancelled: Rain" in item.last_error
     rows = (
         historical_session.execute(
             select(HistoricalPitcherStart).where(HistoricalPitcherStart.mlb_game_pk == GAME_A)

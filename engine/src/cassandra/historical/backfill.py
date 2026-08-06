@@ -463,7 +463,8 @@ def process_game_feed(
         _mark_item(session, item, status="failed", run_id=run.backfill_run_id, error=f"invalid JSON: {exc}")
         return "failed"
 
-    game_status = payload.get("gameData", {}).get("status", {}).get("abstractGameState", "Unknown")
+    status_block = payload.get("gameData", {}).get("status", {})
+    game_status = status_block.get("abstractGameState", "Unknown")
     if game_status != "Final":
         _mark_item(
             session,
@@ -471,6 +472,25 @@ def process_game_feed(
             status="skipped",
             run_id=run.backfill_run_id,
             error=f"game_status={game_status}, not yet Final",
+        )
+        return "skipped"
+
+    # A cancelled/postponed game can still report abstractGameState=Final
+    # (MLB's schedule marks it "closed out", not "pending") while
+    # genuinely having no pitching lines to collect -- a real, honest
+    # exclusion, not a processing failure. detailedState carries the
+    # actual reason (e.g. "Cancelled: Rain", "Postponed"); classify these
+    # as skipped with that reason rather than a generic "no pitching
+    # lines found" failure, matching the directive's requirement that
+    # every excluded game carry an explicit reason.
+    detailed_state = (status_block.get("detailedState") or "").lower()
+    if any(marker in detailed_state for marker in ("cancel", "postpone", "suspend")):
+        _mark_item(
+            session,
+            item,
+            status="skipped",
+            run_id=run.backfill_run_id,
+            error=f"no game played: {status_block.get('detailedState')}",
         )
         return "skipped"
 
