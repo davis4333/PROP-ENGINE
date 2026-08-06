@@ -33,6 +33,7 @@ function makeProjection(overrides: Partial<ProjectionOut> = {}): ProjectionOut {
     reproducibility_hash: "abc123",
     published_at: "2023-06-15T16:00:00Z",
     is_late_publication: false,
+    record_label: "LIVE",
     grade: null,
     ...overrides,
   };
@@ -106,5 +107,22 @@ describe("ProjectionsTable", () => {
 
     expect(screen.getByText("WIN")).toBeInTheDocument();
     expect(screen.getByText("late")).toBeInTheDocument();
+  });
+
+  it("shows no record-label badge for a real live pick", () => {
+    render(
+      <ProjectionsTable projections={[makeProjection()]} emptyMessage="" />,
+    );
+    expect(screen.queryByText("DEMO")).not.toBeInTheDocument();
+  });
+
+  it("badges a non-LIVE record so it can never be mistaken for a real pick", () => {
+    render(
+      <ProjectionsTable
+        projections={[makeProjection({ record_label: "DEMO" })]}
+        emptyMessage=""
+      />,
+    );
+    expect(screen.getByText("DEMO")).toBeInTheDocument();
   });
 });

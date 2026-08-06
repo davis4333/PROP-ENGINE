@@ -61,7 +61,17 @@ export function ProjectionsTable({
                 )}
               </td>
               <td>
-                <div className={styles.player}>{p.player_name}</div>
+                <div className={styles.player}>
+                  {p.player_name}
+                  {p.record_label !== "LIVE" && (
+                    <span
+                      className={styles.recordLabel}
+                      title="Not a real live pick -- excluded from official performance record"
+                    >
+                      {p.record_label}
+                    </span>
+                  )}
+                </div>
                 {(p.team || p.opponent) && (
                   <div className={styles.matchup}>
                     {p.team ?? "?"} vs {p.opponent ?? "?"}

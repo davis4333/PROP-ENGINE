@@ -85,6 +85,7 @@ def assemble_projection_out(session: Session, projection: Projection, grade: Gra
         reproducibility_hash=projection.reproducibility_hash,
         published_at=projection.published_at,
         is_late_publication=projection.is_late_publication,
+        record_label=projection.record_label,
         grade=(
             GradeOut(
                 result=grade.result, actual_strikeouts=grade.actual_strikeouts, graded_at=grade.graded_at

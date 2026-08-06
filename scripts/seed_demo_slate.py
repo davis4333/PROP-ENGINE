@@ -113,6 +113,11 @@ def main() -> None:
                 http_client=client,
                 lines_drop_dir=DEMO_FIXTURES,
                 publish=True,
+                # Never "LIVE" -- this is a fixture replay, not a real
+                # pipeline run, and must never be mistaken for one on any
+                # page that reads the projections table (see
+                # db/models/projection.py's RECORD_LABELS).
+                record_label="DEMO",
             )
             print(f"run_slate: run_id={run_result.run_id}")
             print(

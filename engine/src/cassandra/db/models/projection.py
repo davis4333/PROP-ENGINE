@@ -20,6 +20,22 @@ from cassandra.db.base import Base
 
 DECISIONS = ("OVER", "UNDER", "NO_PLAY")
 DECISION_STATUSES = ("QUALIFIED", "UNCERTAIN", "HELD", "REJECTED")
+# Mission directive: "DEMO/BACKTEST/PAPER/LIVE record classification for
+# the public Ledger" -- CLAUDE.md non-negotiable #8 requires anything
+# historical/reconstructed to be labeled BACKTEST/PAPER, never LIVE, but
+# the separate historical/ subsystem never writes to this table at all
+# (see db/models/historical.py's module docstring) -- BACKTEST/PAPER are
+# listed here for completeness and future-proofing (per the directive's
+# explicit vocabulary) but are not currently written by any code path.
+# In practice only two labels are ever actually written today: LIVE (the
+# real pipeline, orchestration/run_slate.py's default) and DEMO
+# (scripts/seed_demo_slate.py's fixture-replay demo slate, so a real
+# operator running `make seed-demo` against a real database can never
+# have its rows silently mistaken for genuine live picks). Whether the
+# live pipeline should default to LIVE or PAPER during any beta/paper-
+# tracking period is a real product decision for Tyler, not guessed at
+# here -- LIVE is the existing, unchanged default behavior.
+RECORD_LABELS = ("LIVE", "DEMO", "BACKTEST", "PAPER")
 
 
 class Projection(Base):
@@ -27,6 +43,7 @@ class Projection(Base):
     __table_args__ = (
         CheckConstraint(f"decision IN {DECISIONS}", name="ck_projections_decision"),
         CheckConstraint(f"decision_status IN {DECISION_STATUSES}", name="ck_projections_decision_status"),
+        CheckConstraint(f"record_label IN {RECORD_LABELS}", name="ck_projections_record_label"),
         UniqueConstraint("logical_key", "version", name="uq_projections_logical_key_version"),
     )
 
@@ -57,6 +74,13 @@ class Projection(Base):
     decision: Mapped[str] = mapped_column(String, nullable=False)
     decision_status: Mapped[str] = mapped_column(String, nullable=False)
     reason_codes: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+
+    # See RECORD_LABELS above. "LIVE" for the real pipeline; anything else
+    # must be excluded from official public performance claims by readers
+    # (same enforcement pattern as is_late_publication, ADR 0008) -- never
+    # hidden, since the immutability/transparency principle applies to
+    # every row regardless of label.
+    record_label: Mapped[str] = mapped_column(String, nullable=False, default="LIVE")
 
     model_version: Mapped[str | None] = mapped_column(String)
     feature_set_version: Mapped[str | None] = mapped_column(String)

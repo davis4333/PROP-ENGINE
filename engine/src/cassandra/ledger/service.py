@@ -59,6 +59,7 @@ def publish_projection(
     decision: Decision,
     as_of: datetime,
     publish: bool = True,
+    record_label: str = "LIVE",
 ) -> Projection:
     """Writes a new (or version-superseding) projections row. Always an
     INSERT -- rerunning a slate never mutates a prior row.
@@ -67,7 +68,13 @@ def publish_projection(
     player/game as of the freeze cutoff (MARKET_CONTEXT_INCOMPLETE, a fail
     finding decide() already turned into REJECTED/NO_PLAY) -- the
     projection is still logged for transparency, just with no line to
-    grade against later."""
+    grade against later.
+
+    `record_label` (see `db/models/projection.py`'s `RECORD_LABELS`)
+    defaults to `"LIVE"` -- the real pipeline never needs to pass this.
+    `scripts/seed_demo_slate.py` is the one caller that overrides it to
+    `"DEMO"`, so a fixture-replay run against a real database can never
+    be silently mistaken for a genuine live pick."""
     logical_key = logical_key_for(player_id, game.game_id)
     existing = latest_version(session, logical_key)
     version = (existing.version + 1) if existing else 1
@@ -123,6 +130,7 @@ def publish_projection(
         git_commit_sha=git_sha,
         published_at=published_at,
         is_late_publication=is_late,
+        record_label=record_label,
     )
     session.add(row)
     session.add(
@@ -137,6 +145,7 @@ def publish_projection(
                 "decision": decision.decision,
                 "decision_status": decision.decision_status,
                 "is_late_publication": is_late,
+                "record_label": record_label,
             },
         )
     )

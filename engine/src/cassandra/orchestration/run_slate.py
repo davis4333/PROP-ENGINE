@@ -199,6 +199,7 @@ def run_slate(
     lines_drop_dir: Path | None = None,
     edge_threshold: float | None = None,
     publish: bool = True,
+    record_label: str = "LIVE",
 ) -> RunSlateResult:
     if cutoff_at.tzinfo is None:
         raise ValueError("cutoff_at must be timezone-aware (UTC)")
@@ -326,6 +327,7 @@ def run_slate(
                 decision=decision,
                 as_of=effective_cutoff,
                 publish=publish,
+                record_label=record_label,
             )
             result.projections_published.append(row)
         session.flush()

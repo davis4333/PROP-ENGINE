@@ -53,6 +53,7 @@ class ProjectionOut(BaseModel):
     reproducibility_hash: str | None
     published_at: datetime | None
     is_late_publication: bool
+    record_label: str
     grade: GradeOut | None = None
 
 

@@ -190,6 +190,27 @@ against real (not mocked) data during this build.
   number). Dedicated tests cover the new boundary (a publication inside
   the window but before first pitch is late; just outside it is
   official).
+- **DEMO/BACKTEST/PAPER/LIVE record classification**: `projections.
+  record_label` (migration `b09cb74d06a7`, `db/models/projection.py`'s
+  `RECORD_LABELS`) defaults to `"LIVE"` on every write, requiring no
+  change from the real pipeline (`orchestration/run_slate.py`); `scripts/
+  seed_demo_slate.py`'s fixture-replay demo slate is the one caller that
+  overrides it to `"DEMO"`, so a `make seed-demo` run against a real
+  database can never be silently mistaken for a genuine live pick on any
+  page that reads this table -- verified end to end (seeded a scratch
+  database, confirmed all 20 written rows are `record_label='DEMO'`).
+  Never hidden -- the transparency principle applies to every row
+  regardless of label, same enforcement pattern as `is_late_publication`
+  (excluded from official aggregates by readers, not by omission).
+  `ProjectionOut.record_label` exposed via the API; `ProjectionsTable`
+  badges any non-`LIVE` row on both Today and Ledger. `BACKTEST`/`PAPER`
+  are in the CHECK constraint's allowed vocabulary (per the mission
+  directive's explicit labeling requirement) but no code path writes them
+  today -- the separate `historical/` subsystem never writes to
+  `projections` at all (see its own `HISTORICAL_RECONSTRUCTION` labeling
+  on its own frozen report files instead). Whether the live pipeline
+  should default to `LIVE` vs `PAPER` during any beta/paper-tracking
+  period is a real product decision for Tyler, not guessed at here.
 - Honest, append-only grading (`grading/service.py`): WIN/LOSS/PUSH/VOID/
   NO_PLAY, only grades published projections against `Final` box scores
   (ADR 0007), idempotent (a correction — a later Final box score for the

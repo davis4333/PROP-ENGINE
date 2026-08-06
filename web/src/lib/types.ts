@@ -36,6 +36,7 @@ export interface ProjectionOut {
   reproducibility_hash: string | null;
   published_at: string | null;
   is_late_publication: boolean;
+  record_label: string;
   grade: GradeOut | null;
 }
 

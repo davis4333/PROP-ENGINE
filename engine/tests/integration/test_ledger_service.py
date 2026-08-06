@@ -86,6 +86,35 @@ def test_publish_projection_creates_version_one(db_session):
     assert row.reproducibility_hash is not None
     assert row.published_at is not None
     assert row.is_late_publication is False
+    assert row.record_label == "LIVE"  # real pipeline callers never need to pass this
+
+
+def test_publish_projection_accepts_a_non_live_record_label(db_session):
+    # scripts/seed_demo_slate.py's one real use of this -- a fixture
+    # replay must never be silently indistinguishable from a real live
+    # pick in the same projections table.
+    snapshot = _make_snapshot(db_session)
+    game = _make_game(db_session, game_id="test-game-demo", scheduled_start_utc=NOW + timedelta(hours=3))
+    _make_player(db_session, player_id="test-player-demo")
+    decision = decide(5.5, PoissonStrikeoutDistribution(mean=8.0), [])
+
+    row = publish_projection(
+        db_session,
+        run_id="run-demo",
+        snapshot=snapshot,
+        game=game,
+        player_id="test-player-demo",
+        line=5.5,
+        feature_set_version="k-features-0.1.0",
+        features={"expected_bf": 23.0},
+        model_version="k-model-0.1.0",
+        decision=decision,
+        as_of=NOW,
+        record_label="DEMO",
+    )
+    db_session.flush()
+
+    assert row.record_label == "DEMO"
 
 
 def test_republishing_creates_new_version_without_mutating_first(db_session):
