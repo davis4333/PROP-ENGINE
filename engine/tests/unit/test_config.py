@@ -66,3 +66,20 @@ def test_neither_signal_present_is_not_production(monkeypatch):
     monkeypatch.setattr(settings, "production_mode", False)
     monkeypatch.delenv("REPLIT_DEPLOYMENT", raising=False)
     assert is_production_environment() is False
+
+
+# --- CORS allowed-origins parsing -------------------------------------------
+
+
+def test_default_allowed_origins_is_wildcard():
+    assert Settings().allowed_origins_list == ["*"]
+
+
+def test_allowed_origins_splits_on_comma_and_strips_whitespace():
+    s = Settings(allowed_origins="https://cassandrahits.replit.app, https://example.com")
+    assert s.allowed_origins_list == ["https://cassandrahits.replit.app", "https://example.com"]
+
+
+def test_allowed_origins_ignores_empty_entries():
+    s = Settings(allowed_origins="https://example.com,,  ,")
+    assert s.allowed_origins_list == ["https://example.com"]

@@ -62,6 +62,20 @@ class Settings(BaseSettings):
     # ADR 0011 -- demo-only auth, not production-ready.
     admin_shared_secret: str = "change-me-dev-only"
 
+    # Phase 8 security hardening. "*" (unrestricted) is the existing,
+    # unchanged default -- safe in the actual Replit deployment topology
+    # (the engine binds 127.0.0.1-only there; scripts/replit_start.sh),
+    # but a real non-Replit/non-proxied deployment (e.g. docker-compose
+    # with the engine's own port exposed) should set this to a comma-
+    # separated allowlist of real frontend origins via the
+    # ALLOWED_ORIGINS env var. Kept permissive by default rather than
+    # guessing a real production origin this build doesn't know.
+    allowed_origins: str = "*"
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+
     # Explicit override for "is this a real production deployment" --
     # see is_production_environment() below. Most deployments shouldn't
     # need to set this: Replit's own REPLIT_DEPLOYMENT env var (present

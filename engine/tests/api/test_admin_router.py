@@ -35,6 +35,17 @@ def test_admin_status_rejects_wrong_secret(client):
     assert response.status_code == 401
 
 
+def test_failed_admin_auth_is_logged_without_the_attempted_secret(client, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="cassandra.api.deps"):
+        client.get("/api/admin/status", headers={"X-Admin-Secret": "a-guessed-secret-value"})
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("admin auth failed" in m for m in messages)
+    assert not any("a-guessed-secret-value" in m for m in messages)
+
+
 def test_admin_status_with_correct_secret_returns_versions_and_empty_state(client):
     response = client.get("/api/admin/status", headers=AUTH)
 

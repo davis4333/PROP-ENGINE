@@ -5,6 +5,7 @@ production authentication)."""
 from __future__ import annotations
 
 import hmac
+import logging
 import threading
 import time
 from collections.abc import Generator
@@ -14,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from cassandra.config import settings
 from cassandra.db.session import get_session
+
+logger = logging.getLogger(__name__)
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -55,6 +58,9 @@ def _record_failure(client_key: str) -> None:
 def require_admin(request: Request, x_admin_secret: str | None = Header(default=None)) -> None:
     client_key = _client_key(request)
     if _is_locked_out(client_key):
+        # Not re-logged on every locked-out retry (that's just the same
+        # already-recorded failure streak hitting the wall) -- the
+        # individual failures that got it there were already logged below.
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many failed admin auth attempts -- try again later",
@@ -64,6 +70,11 @@ def require_admin(request: Request, x_admin_secret: str | None = Header(default=
     # timing side-channel for guessing a shared secret over the network.
     if not x_admin_secret or not hmac.compare_digest(x_admin_secret, settings.admin_shared_secret):
         _record_failure(client_key)
+        # Operational audit trail for a real deployment (Phase 8) --
+        # never logs the attempted secret value itself, only that an
+        # attempt happened and from where, so this can't itself become a
+        # secrets leak via log aggregation.
+        logger.warning("admin auth failed: client=%s path=%s", client_key, request.url.path)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid X-Admin-Secret header"
         )

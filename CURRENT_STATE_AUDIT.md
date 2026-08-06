@@ -343,6 +343,31 @@ against real (not mocked) data during this build.
   against a real running engine + seeded DB row, not just automated
   tests: login, slate-date entry, paste, Preview showing correct
   matched/unmatched, Import actually writing the row.
+- **Phase 8 security hardening is real and implemented**: CORS is now a
+  configurable allowlist (`config.py`'s `allowed_origins`/
+  `allowed_origins_list`, `ALLOWED_ORIGINS` env var) instead of a
+  hardcoded `"*"` -- the default is still `"*"`, which remains safe in
+  the actual Replit deployment topology (the FastAPI engine binds
+  `127.0.0.1`-only there; see `scripts/replit_start.sh`, so no browser
+  can reach it cross-origin at all), but a real non-Replit/non-proxied
+  deployment can now lock it down without a code change. `api/main.py`
+  adds an HTTP middleware setting `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, and `Referrer-Policy:
+  strict-origin-when-cross-origin` on every response, mirrored in
+  `web/next.config.ts`'s `headers()` since the Next.js app -- not the
+  loopback-only engine -- is the actually publicly-reachable surface in
+  production. **Deliberately no CSRF-token mechanism**: ADR 0011's admin
+  auth is a custom `X-Admin-Secret` HEADER, not a cookie-based session,
+  so the classic CSRF vector (a browser auto-attaching credentials to a
+  cross-origin request) doesn't apply here -- documented inline in
+  `api/main.py` so this isn't silently reintroduced later as an
+  unexplained gap. `api/deps.py`'s `require_admin()` now logs failed
+  auth attempts (`logger.warning("admin auth failed: client=... path=...")`)
+  for operational visibility, explicitly never logging the attempted
+  secret value itself. Verified with real HTTP requests against both a
+  production Next.js build and the FastAPI engine directly (`curl`,
+  headers confirmed present on `/health` and a 404), not just unit
+  tests.
 
 ### Historical backfill (2023-present)
 
