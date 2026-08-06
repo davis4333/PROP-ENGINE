@@ -2,6 +2,9 @@ import type {
   AdminStatusResponse,
   GradeActionResponse,
   LedgerResponse,
+  LineImportCommitResponse,
+  LineImportEntryIn,
+  LineImportPreviewResponse,
   ProjectionHistoryResponse,
   RunActionResponse,
   TodayResponse,
@@ -106,6 +109,30 @@ export function triggerGrade(
   return postJson(`/api/admin/runs/${encodeURIComponent(slateDate)}/grade`, {
     "X-Admin-Secret": secret,
   });
+}
+
+export function previewLineImport(
+  slateDate: string,
+  entries: LineImportEntryIn[],
+  secret: string,
+): Promise<LineImportPreviewResponse> {
+  return postJson(
+    `/api/admin/lines/${encodeURIComponent(slateDate)}/preview`,
+    { "X-Admin-Secret": secret },
+    { entries },
+  );
+}
+
+export function importLines(
+  slateDate: string,
+  entries: LineImportEntryIn[],
+  secret: string,
+): Promise<LineImportCommitResponse> {
+  return postJson(
+    `/api/admin/lines/${encodeURIComponent(slateDate)}/import`,
+    { "X-Admin-Secret": secret },
+    { entries },
+  );
 }
 
 export const PIPELINE_STAGES = [

@@ -23,16 +23,22 @@ from cassandra.api.deps import get_db, require_admin
 from cassandra.api.schemas import (
     AdminStatusResponse,
     GradeActionResponse,
+    LineImportCommitResponse,
+    LineImportEntryIn,
+    LineImportPreviewResponse,
+    MatchedLineImportEntryOut,
     PipelineRunOut,
     PipelineStageOut,
     RunActionResponse,
     SourceHealthOut,
+    UnmatchedLineImportEntryOut,
 )
 from cassandra.config import settings
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
 from cassandra.db.models.sources import SourceHealth
 from cassandra.decision.engine import DECISION_POLICY_VERSION
 from cassandra.features.builders import FEATURE_SET_VERSION
+from cassandra.ingestion.manual_line_import import LineImportEntry, commit_line_import, preview_line_import
 from cassandra.models.baseline import MODEL_VERSION
 from cassandra.orchestration.run_slate import grade_slate_run, run_slate
 
@@ -147,4 +153,68 @@ def trigger_grade(slate_date: date_type, db: Session = Depends(get_db)) -> Grade
     result = grade_slate_run(db, slate_date)
     return GradeActionResponse(
         run_id=result.run_id, slate_date=result.slate_date, grades_written=len(result.grades)
+    )
+
+
+def _to_entries(entries_in: list[LineImportEntryIn]) -> list[LineImportEntry]:
+    return [
+        LineImportEntry(
+            player_name=e.player_name,
+            line=e.line,
+            over_price=e.over_price,
+            under_price=e.under_price,
+            market=e.market,
+        )
+        for e in entries_in
+    ]
+
+
+@router.post("/lines/{slate_date}/preview", response_model=LineImportPreviewResponse)
+def preview_lines(
+    slate_date: date_type,
+    entries: list[LineImportEntryIn] = Body(embed=True),
+    db: Session = Depends(get_db),
+) -> LineImportPreviewResponse:
+    """Resolves pasted lines against today's real confirmed starters
+    without writing anything -- see ingestion/manual_line_import.py.
+    Call this before `/lines/{slate_date}/import` so an operator can see
+    exactly what will and won't be imported."""
+    preview = preview_line_import(db, slate_date, _to_entries(entries))
+    return LineImportPreviewResponse(
+        slate_date=slate_date,
+        matched=[
+            MatchedLineImportEntryOut(
+                player_name=m.entry.player_name,
+                line=m.entry.line,
+                over_price=m.entry.over_price,
+                under_price=m.entry.under_price,
+                market=m.entry.market,
+                player_mlb_id=m.player_mlb_id,
+                mlb_game_pk=m.mlb_game_pk,
+                is_possible_duplicate=m.is_possible_duplicate,
+            )
+            for m in preview.matched
+        ],
+        unmatched=[
+            UnmatchedLineImportEntryOut(
+                player_name=u.entry.player_name, line=u.entry.line, market=u.entry.market, reason=u.reason
+            )
+            for u in preview.unmatched
+        ],
+    )
+
+
+@router.post("/lines/{slate_date}/import", response_model=LineImportCommitResponse)
+def import_lines(
+    slate_date: date_type,
+    entries: list[LineImportEntryIn] = Body(embed=True),
+    db: Session = Depends(get_db),
+) -> LineImportCommitResponse:
+    """Writes matched entries as real `raw_lines` rows (append-only, same
+    contract every other lines adapter produces). Unmatched entries are
+    never written or guessed at -- see `not_imported` for exactly what
+    didn't match and why."""
+    result = commit_line_import(db, slate_date, _to_entries(entries))
+    return LineImportCommitResponse(
+        slate_date=slate_date, records_written=result.records_written, not_imported=result.warnings
     )

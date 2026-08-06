@@ -122,3 +122,41 @@ class GradeActionResponse(BaseModel):
     run_id: str
     slate_date: date
     grades_written: int
+
+
+class LineImportEntryIn(BaseModel):
+    player_name: str
+    line: float
+    over_price: float | None = None
+    under_price: float | None = None
+    market: str = "pitcher_strikeouts"
+
+
+class MatchedLineImportEntryOut(BaseModel):
+    player_name: str
+    line: float
+    over_price: float | None
+    under_price: float | None
+    market: str
+    player_mlb_id: int
+    mlb_game_pk: int
+    is_possible_duplicate: bool
+
+
+class UnmatchedLineImportEntryOut(BaseModel):
+    player_name: str
+    line: float
+    market: str
+    reason: str
+
+
+class LineImportPreviewResponse(BaseModel):
+    slate_date: date
+    matched: list[MatchedLineImportEntryOut]
+    unmatched: list[UnmatchedLineImportEntryOut]
+
+
+class LineImportCommitResponse(BaseModel):
+    slate_date: date
+    records_written: int
+    not_imported: list[str]

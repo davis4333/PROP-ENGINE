@@ -258,6 +258,29 @@ against real (not mocked) data during this build.
   problem in the Admin UI. Whether this needs the same "never blocking"
   treatment, a smarter time-aware threshold, or is fine as-is is a real
   product call, not an engineering one.
+- **Manual Underdog-line-import admin tool is real and implemented**:
+  `ingestion/manual_line_import.py` (`preview_line_import`/
+  `commit_line_import`) resolves pasted player-name + line entries
+  against that slate's real confirmed probable pitchers -- same
+  by-name-matching and ambiguous-name-collision handling
+  `adapters/lines_odds_api.py`'s real odds-vendor integration uses, so a
+  name that doesn't match or is ambiguous is reported, never guessed at.
+  API: `POST /api/admin/lines/{slate_date}/{preview,import}` (same
+  shared-secret gate as every other admin route). Writes real
+  `raw_lines` rows via the standard `ingest_service.ingest()` path
+  (source `lines_manual_admin_import`) -- append-only, audited, same as
+  every other source; flags a same-day pre-existing line as an
+  informational (non-blocking) possible duplicate. Admin page gained a
+  "Manual Line Import" section (paste `Player Name, line, over_price,
+  under_price` one per line, Preview before Import). Exists specifically
+  because the pre-existing drop-folder mechanism
+  (`adapters/lines_manual.py`) needs filesystem access to the running
+  server, which an operator on a deployed Replit instance doesn't have --
+  this is the same underlying `raw_lines` contract exposed as an admin
+  action instead. Verified end-to-end in a real browser (Playwright)
+  against a real running engine + seeded DB row, not just automated
+  tests: login, slate-date entry, paste, Preview showing correct
+  matched/unmatched, Import actually writing the row.
 
 ### Historical backfill (2023-present)
 

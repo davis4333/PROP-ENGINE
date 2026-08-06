@@ -7,10 +7,13 @@ import { SourceHealthTile } from "@/components/SourceHealthTile";
 import {
   ApiError,
   fetchAdminStatus,
+  importLines,
+  previewLineImport,
   triggerGrade,
   triggerRun,
 } from "@/lib/api";
-import type { AdminStatusResponse } from "@/lib/types";
+import { parseLineImportText } from "@/lib/lineImportParsing";
+import type { AdminStatusResponse, LineImportPreviewResponse } from "@/lib/types";
 
 const SECRET_STORAGE_KEY = "cassandra_admin_secret";
 
@@ -24,6 +27,15 @@ export default function AdminPage() {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState(false);
+
+  const [lineImportText, setLineImportText] = useState("");
+  const [lineImportPreview, setLineImportPreview] =
+    useState<LineImportPreviewResponse | null>(null);
+  const [lineImportMessage, setLineImportMessage] = useState<string | null>(
+    null,
+  );
+  const [lineImportError, setLineImportError] = useState<string | null>(null);
+  const [lineImportPending, setLineImportPending] = useState(false);
 
   useEffect(() => {
     const stored = sessionStorage.getItem(SECRET_STORAGE_KEY);
@@ -77,6 +89,44 @@ export default function AdminPage() {
       setActionError(`Failed to trigger ${kind}. See engine logs for details.`);
     } finally {
       setActionPending(false);
+    }
+  }
+
+  async function handleLinePreview() {
+    if (!secret || !slateDateInput) return;
+    setLineImportPending(true);
+    setLineImportMessage(null);
+    setLineImportError(null);
+    try {
+      const entries = parseLineImportText(lineImportText);
+      const result = await previewLineImport(slateDateInput, entries, secret);
+      setLineImportPreview(result);
+    } catch {
+      setLineImportError("Couldn't preview these lines. See engine logs for details.");
+    } finally {
+      setLineImportPending(false);
+    }
+  }
+
+  async function handleLineImport() {
+    if (!secret || !slateDateInput) return;
+    setLineImportPending(true);
+    setLineImportMessage(null);
+    setLineImportError(null);
+    try {
+      const entries = parseLineImportText(lineImportText);
+      const result = await importLines(slateDateInput, entries, secret);
+      setLineImportMessage(
+        `Imported ${result.records_written} line(s).` +
+          (result.not_imported.length > 0
+            ? ` ${result.not_imported.length} not imported -- see below.`
+            : ""),
+      );
+      setLineImportPreview(null);
+    } catch {
+      setLineImportError("Couldn't import these lines. See engine logs for details.");
+    } finally {
+      setLineImportPending(false);
     }
   }
 
@@ -185,6 +235,76 @@ export default function AdminPage() {
             </div>
             {actionMessage && <p className={styles.success}>{actionMessage}</p>}
             {actionError && <p className={styles.error}>{actionError}</p>}
+          </section>
+
+          <section className={styles.section}>
+            <h2 className={styles.sectionTitle}>Manual Line Import</h2>
+            <p className={styles.subtitle}>
+              One line per entry: <code>Player Name, line, over_price, under_price</code>
+              {" "}(prices optional). Matched against today&rsquo;s real confirmed
+              starters for the slate date selected above -- nothing is
+              guessed for an unmatched or ambiguous name.
+            </p>
+            <textarea
+              value={lineImportText}
+              onChange={(e) => setLineImportText(e.target.value)}
+              placeholder={"Zack Wheeler, 6.5, -115, -105\nGerrit Cole, 7.5"}
+              rows={5}
+              className={styles.lineImportTextarea}
+              aria-label="Lines to import"
+            />
+            <div className={styles.actionForm}>
+              <button
+                type="button"
+                className={styles.button}
+                disabled={!slateDateInput || !lineImportText.trim() || lineImportPending}
+                onClick={handleLinePreview}
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                className={styles.button}
+                disabled={!slateDateInput || !lineImportText.trim() || lineImportPending}
+                onClick={handleLineImport}
+              >
+                Import
+              </button>
+            </div>
+            {lineImportMessage && (
+              <p className={styles.success}>{lineImportMessage}</p>
+            )}
+            {lineImportError && <p className={styles.error}>{lineImportError}</p>}
+            {lineImportPreview && (
+              <div className={styles.lineImportPreview}>
+                {lineImportPreview.matched.length > 0 && (
+                  <div>
+                    <strong>Matched ({lineImportPreview.matched.length})</strong>
+                    {lineImportPreview.matched.map((m, i) => (
+                      <div key={i} className={styles.lineImportRow}>
+                        {m.player_name}: {m.line}
+                        {m.is_possible_duplicate && (
+                          <span className={styles.lineImportWarning}>
+                            {" "}
+                            &mdash; a line already exists for this player today
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {lineImportPreview.unmatched.length > 0 && (
+                  <div>
+                    <strong>Not matched ({lineImportPreview.unmatched.length})</strong>
+                    {lineImportPreview.unmatched.map((u, i) => (
+                      <div key={i} className={styles.lineImportRow}>
+                        {u.player_name}: {u.reason}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </section>
 
           <section className={styles.section}>

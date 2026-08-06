@@ -106,3 +106,41 @@ export interface GradeActionResponse {
   slate_date: string;
   grades_written: number;
 }
+
+export interface LineImportEntryIn {
+  player_name: string;
+  line: number;
+  over_price?: number | null;
+  under_price?: number | null;
+  market?: string;
+}
+
+export interface MatchedLineImportEntryOut {
+  player_name: string;
+  line: number;
+  over_price: number | null;
+  under_price: number | null;
+  market: string;
+  player_mlb_id: number;
+  mlb_game_pk: number;
+  is_possible_duplicate: boolean;
+}
+
+export interface UnmatchedLineImportEntryOut {
+  player_name: string;
+  line: number;
+  market: string;
+  reason: string;
+}
+
+export interface LineImportPreviewResponse {
+  slate_date: string;
+  matched: MatchedLineImportEntryOut[];
+  unmatched: UnmatchedLineImportEntryOut[];
+}
+
+export interface LineImportCommitResponse {
+  slate_date: string;
+  records_written: number;
+  not_imported: string[];
+}
