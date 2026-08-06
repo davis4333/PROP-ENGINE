@@ -51,6 +51,7 @@ from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
 from cassandra.db.models.projection import Projection
 from cassandra.db.models.raw import RawProbablePitcher
 from cassandra.db.models.sources import SourceHealth
+from cassandra.db.session import session_scope
 from cassandra.decision.engine import Decision, decide
 from cassandra.features.builders import FEATURE_SET_VERSION, build_features
 from cassandra.grading.service import grade_slate
@@ -183,6 +184,110 @@ def _finish_run(session: Session, run_id: str, *, status: str) -> None:
         run.status = status
 
 
+def _safe_error_detail(exc: Exception) -> str:
+    """Never touches `str(exc)` for exception types known to embed a full
+    request URL -- `httpx.HTTPStatusError`/`httpx.RequestError`'s own
+    `__str__` includes it, which for this codebase's API-key-bearing
+    adapters (`adapters/lines_odds_api.py`'s `apiKey` query parameter)
+    would leak a live credential into this permanent, undeletable failure
+    record. Mirrors `lines_odds_api.py`'s own `_safe_fetch_error` (found
+    during a live security review), generalized here since this
+    orchestration layer's broad `except Exception` could in principle see
+    a raw httpx error that slipped past an adapter's own handling, not
+    just the one adapter that already guards against this."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.RequestError):
+        return type(exc).__name__
+    return str(exc)
+
+
+def _record_failed_run(
+    session: Session,
+    slate_date: date,
+    run_id: str,
+    *,
+    completed_stages: list[tuple[str, str | None]],
+    failed_stage: str,
+    exc: Exception,
+) -> None:
+    """Durably records a failed run in its OWN fresh session/transaction,
+    committed immediately -- deliberately NOT the caller's own `session`.
+    Found and fixed after an audit: `run_slate()`/`grade_slate_run()`'s
+    caller (`db/session.py`'s `session_scope()`, used by the CLI, the API,
+    and the scheduler) rolls back the ENTIRE transaction on any exception,
+    which previously erased the failure marking itself along with
+    everything else -- a failed pipeline run left literally zero trace in
+    the database (no `PipelineRun` row, no `PipelineRunStage` rows, no
+    `RUN_FAILED` audit event), so the Admin status endpoint could never
+    show that anything had gone wrong.
+
+    `completed_stages` is tracked in Python-level state as the caller's
+    try block progresses (not re-read from the doomed session, which is
+    about to lose those rows too) -- every stage that genuinely succeeded
+    before the failure is re-recorded here so the durable record is
+    complete, not just "something failed somewhere." The business data
+    those stages wrote (raw ingestion rows, features, etc.) is correctly
+    NOT re-created here -- only knowing a run failed and where is
+    durable; the pipeline's actual output for a failed run stays
+    atomically all-or-nothing, exactly as before.
+
+    `session.rollback()` is called FIRST, deliberately, before opening
+    the fresh session below -- found as a real deadlock during this
+    fix's own verification, not a hypothetical: `_start_run()` already
+    inserted (and flushed, but never committed) a `PipelineRun` row with
+    this exact `run_id` into the caller's own `session`. That transaction
+    is still open at this point (the caller's `session_scope()` hasn't
+    had a chance to roll it back yet -- we're still inside the except
+    block that's about to re-raise up to it). Postgres serializes
+    concurrent inserts that could conflict on the same primary key: the
+    fresh session's own insert for that same `run_id` would BLOCK
+    indefinitely waiting for the caller's still-open transaction to
+    resolve, and it never would, because that transaction is waiting on
+    THIS function to return. Rolling back the caller's session here --
+    slightly earlier than `session_scope()` would have anyway -- releases
+    that lock immediately and is otherwise a no-op from the caller's
+    perspective (their own `session_scope()` calls `session.rollback()`
+    again right after this function returns and the exception re-raises;
+    rolling back an already-rolled-back session is harmless)."""
+    session.rollback()
+    error_class = type(exc).__name__
+    error_detail = _safe_error_detail(exc)
+    with session_scope() as failure_session:
+        failure_session.merge(
+            PipelineRun(run_id=run_id, slate_date=slate_date, status="failed", current_stage=failed_stage)
+        )
+        now = datetime.now(UTC)
+        for stage_name, detail in completed_stages:
+            failure_session.add(
+                PipelineRunStage(
+                    run_id=run_id, stage=stage_name, status="succeeded", detail=detail, finished_at=now
+                )
+            )
+        failure_session.add(
+            PipelineRunStage(
+                run_id=run_id,
+                stage=failed_stage,
+                status="failed",
+                detail=f"{error_class}: {error_detail}",
+                finished_at=datetime.now(UTC),
+            )
+        )
+        failure_session.add(
+            AuditEvent(
+                event_type="RUN_FAILED",
+                entity_type="pipeline_run",
+                entity_id=run_id,
+                run_id=run_id,
+                payload={
+                    "error_class": error_class,
+                    "error_detail": error_detail,
+                    "failed_stage": failed_stage,
+                },
+            )
+        )
+
+
 def _ensure_feature_set(session: Session, version: str) -> None:
     stmt = pg_insert(FeatureSet).values(
         feature_set_version=version, description="Baseline model feature set -- see features/registry.py"
@@ -210,6 +315,19 @@ def run_slate(
     result = RunSlateResult(run_id=run_id, slate_date=slate_date, cutoff_at=cutoff_at)
     _start_run(session, run_id, slate_date)
 
+    # Tracked in Python-level state, not re-read from `session` on failure
+    # -- see _record_failed_run's docstring for why. `current_stage` is
+    # updated to each stage's name right as it starts, so the except
+    # block below always knows which stage was actually in flight when an
+    # exception hit, even though the DB row that would normally show that
+    # is about to be rolled back along with everything else.
+    current_stage = "INGEST"
+    completed_stages: list[tuple[str, str | None]] = []
+
+    def _mark_succeeded(stage: str, detail: str | None) -> None:
+        _stage(session, run_id, stage, "succeeded", detail=detail)
+        completed_stages.append((stage, detail))
+
     try:
         _stage(session, run_id, "INGEST", "running", started=True)
         result.ingest_results = ingest_slate(
@@ -217,24 +335,17 @@ def run_slate(
         )
         session.flush()
         failed_sources = [r.source_name for r in result.ingest_results if not r.is_available]
-        _stage(
-            session,
-            run_id,
+        _mark_succeeded(
             "INGEST",
-            "succeeded",
-            detail=f"{len(result.ingest_results)} sources attempted; unavailable: {failed_sources or 'none'}",
+            f"{len(result.ingest_results)} sources attempted; unavailable: {failed_sources or 'none'}",
         )
 
+        current_stage = "VALIDATE"
         _stage(session, run_id, "VALIDATE", "running", started=True)
-        _stage(
-            session,
-            run_id,
+        _mark_succeeded(
             "VALIDATE",
-            "succeeded",
-            detail=(
-                "Data-quality checks run inside FREEZE's build_snapshot; "
-                "see this run's snapshot_data_quality rows."
-            ),
+            "Data-quality checks run inside FREEZE's build_snapshot; "
+            "see this run's snapshot_data_quality rows.",
         )
 
         # ingest_slate() just wrote fresh raw_* rows stamped with real
@@ -250,13 +361,15 @@ def run_slate(
         effective_cutoff = max(cutoff_at, datetime.now(UTC))
         result.cutoff_at = effective_cutoff
 
+        current_stage = "FREEZE"
         _stage(session, run_id, "FREEZE", "running", started=True)
         snapshot, entries = build_snapshot(session, slate_date, effective_cutoff)
         session.flush()
         result.snapshot_id = snapshot.snapshot_id
         result.entries_frozen = len(entries)
-        _stage(session, run_id, "FREEZE", "succeeded", detail=f"{len(entries)} pitcher-slate entries frozen")
+        _mark_succeeded("FREEZE", f"{len(entries)} pitcher-slate entries frozen")
 
+        current_stage = "PROJECT"
         _stage(session, run_id, "PROJECT", "running", started=True)
         _ensure_feature_set(session, FEATURE_SET_VERSION)
         projectable: list[PitcherSlateEntry] = [e for e in entries if e.probable is not None]
@@ -266,17 +379,13 @@ def run_slate(
             i: build_features(e, effective_cutoff) for i, e in enumerate(projectable)
         }
         session.flush()
-        _stage(
-            session,
-            run_id,
+        _mark_succeeded(
             "PROJECT",
-            "succeeded",
-            detail=(
-                f"{len(projectable)} entries projected; "
-                f"{result.entries_skipped_no_starter} skipped (no confirmed starter, DATA_MISSING)"
-            ),
+            f"{len(projectable)} entries projected; "
+            f"{result.entries_skipped_no_starter} skipped (no confirmed starter, DATA_MISSING)",
         )
 
+        current_stage = "REVIEW"
         _stage(session, run_id, "REVIEW", "running", started=True)
         decisions_by_entry: dict[int, tuple[float | None, Decision]] = {}
         for i, entry in enumerate(projectable):
@@ -291,14 +400,9 @@ def run_slate(
                 decide(raw_line, dist, entry.quality_findings, edge_threshold=edge_threshold),
             )
         qualified = sum(1 for _, d in decisions_by_entry.values() if d.decision_status == "QUALIFIED")
-        _stage(
-            session,
-            run_id,
-            "REVIEW",
-            "succeeded",
-            detail=f"{len(decisions_by_entry)} decisions made; {qualified} QUALIFIED",
-        )
+        _mark_succeeded("REVIEW", f"{len(decisions_by_entry)} decisions made; {qualified} QUALIFIED")
 
+        current_stage = "PUBLISH"
         _stage(session, run_id, "PUBLISH", "running", started=True)
         for i, entry in enumerate(projectable):
             raw_line, decision = decisions_by_entry[i]
@@ -335,26 +439,25 @@ def run_slate(
             )
             result.projections_published.append(row)
         session.flush()
-        _stage(
-            session,
-            run_id,
-            "PUBLISH",
-            "succeeded",
-            detail=f"{len(result.projections_published)} projection rows written (publish={publish})",
+        _mark_succeeded(
+            "PUBLISH", f"{len(result.projections_published)} projection rows written (publish={publish})"
         )
 
         _stage(session, run_id, "GRADE", "skipped", detail="Grading happens separately via grade_slate_run")
         _finish_run(session, run_id, status="succeeded")
     except Exception as exc:
-        _finish_run(session, run_id, status="failed")
-        session.add(
-            AuditEvent(
-                event_type="RUN_FAILED",
-                entity_type="pipeline_run",
-                entity_id=run_id,
-                run_id=run_id,
-                payload={"error": str(exc)},
-            )
+        # Deliberately NOT `_finish_run(session, ...)`/`session.add(...)`
+        # on `session` here -- this is the SAME session the caller's
+        # `session_scope()` is about to roll back on this re-raise, which
+        # would erase the failure marking along with everything else. See
+        # _record_failed_run's docstring.
+        _record_failed_run(
+            session,
+            slate_date,
+            run_id,
+            completed_stages=completed_stages,
+            failed_stage=current_stage,
+            exc=exc,
         )
         raise
 
@@ -647,16 +750,11 @@ def grade_slate_run(
         )
         _finish_run(session, run_id, status="succeeded")
     except Exception as exc:
-        _finish_run(session, run_id, status="failed")
-        session.add(
-            AuditEvent(
-                event_type="RUN_FAILED",
-                entity_type="pipeline_run",
-                entity_id=run_id,
-                run_id=run_id,
-                payload={"error": str(exc)},
-            )
-        )
+        # See run_slate()'s matching except block / _record_failed_run's
+        # docstring -- GRADE is this function's only real stage (the rest
+        # are marked "skipped" unconditionally above, before the try
+        # block, so there's nothing else to carry into completed_stages).
+        _record_failed_run(session, slate_date, run_id, completed_stages=[], failed_stage="GRADE", exc=exc)
         raise
 
     return GradeSlateResult(run_id=run_id, slate_date=slate_date, grades=graded)

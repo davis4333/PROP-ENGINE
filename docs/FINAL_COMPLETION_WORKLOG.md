@@ -294,3 +294,96 @@ conservative (see above) -- a future pass could compute real per-game
 Final timestamps (if a reliable source existed) to allow same-date, later
 games to see earlier same-date games' outcomes; not attempted here since
 no such reliable timestamp source currently exists for this backfill.
+
+### 1B -- fixed
+
+Confirmed real by tracing the actual transaction lifecycle (see Phase 0
+findings): `run_slate()`/`grade_slate_run()` marked a run failed and
+added a `RUN_FAILED` audit event on the SAME `session` the caller's
+`db/session.py` `session_scope()` rolls back on any exception -- so a
+failed pipeline run left literally zero trace in the database (not even
+the `PipelineRun` row `_start_run()` inserted survived), and Admin's
+status endpoint could never show that anything had gone wrong.
+
+Fix: a new `_record_failed_run()` writes the failure record via its OWN,
+separately-committed session (`session_scope()` again, a fresh
+connection), independent of the caller's doomed session. Which stages
+genuinely completed before the failure is tracked in Python-level state
+(`completed_stages`, appended by a small `_mark_succeeded()` wrapper
+around the existing `_stage()` calls) rather than re-read from the
+about-to-roll-back session, so the durable record is complete ("INGEST
+and FREEZE genuinely succeeded, PROJECT failed") not just "something
+failed somewhere." Added `_safe_error_detail()`, mirroring
+`adapters/lines_odds_api.py`'s existing `_safe_fetch_error` pattern
+(found during a live security review earlier in this build): never calls
+`str(exc)` for `httpx.HTTPStatusError`/`httpx.RequestError`, since those
+exception types embed the full request URL in their own `__str__`, which
+for this codebase's real API-key-bearing adapter (the Odds API's `apiKey`
+query parameter) would leak a live credential into the permanent,
+undeletable `audit_events` table.
+
+**A real, serious bug was found and fixed during this fix's own
+verification, before any commit**: the first version of `_record_failed_run`
+opened its fresh session and immediately tried to write a `PipelineRun`
+row with the same `run_id` the caller's (still fully open, not-yet-
+rolled-back) session had already inserted via `_start_run()`. Postgres
+serializes concurrent inserts that could conflict on the same primary
+key -- the fresh session's insert blocked indefinitely waiting for the
+caller's transaction to resolve, which never happened, because that
+transaction was itself waiting for `_record_failed_run()` to return. This
+is a genuine deadlock, confirmed live (`pg_stat_activity` showed one
+connection `idle in transaction`, another stuck on `INSERT waiting`) when
+the first version of the new regression tests hung instead of failing --
+this would have made ANY real pipeline failure hang the process
+indefinitely in production, strictly worse than the original bug (which
+at least failed cleanly, just silently). Fixed by having
+`_record_failed_run()` call `session.rollback()` on the CALLER's session
+first, releasing the lock, before opening the fresh session -- harmless
+from the caller's perspective, since their own `session_scope()` would
+roll back that same session again immediately after re-raising anyway.
+
+A second real issue found while writing the regression tests' cleanup:
+`audit_events` (and `projections`) have `DELETE` revoked at the database
+grant level (CLAUDE.md non-negotiable #3) -- a test helper that tried to
+delete a test-injected `AuditEvent` row failed with a real permission
+error. This is correct, not a bug: a real failed run's audit trail is
+exactly as permanent as a real successful run's. Test cleanup only
+deletes `pipeline_runs`/`pipeline_run_stages` rows (genuinely mutable
+operational tracking, confirmed via `db/models/pipeline.py`'s own
+docstrings and the migration's `IMMUTABLE_TABLES` list) -- audit/
+projection rows written by these tests remain permanently in whatever
+database they ran against, same as a real failure would.
+
+Tests: 5 new integration tests
+(`test_run_slate_failure_recording.py`) injecting a real failure at each
+of INGEST/FREEZE/PROJECT/PUBLISH (VALIDATE has no separate code path;
+REVIEW is pure in-memory computation with nothing to fail against a real
+backend) against the same real 2023-06-15 fixture slate
+`test_run_slate.py` already uses -- confirming a durable failed
+`PipelineRun`/`PipelineRunStage`/`AuditEvent` set survives even though
+the calling session (the shared rollback-based `db_session` test
+fixture) is never committed, that stages genuinely completed before the
+failure are correctly recorded as `succeeded` (not lost), that no partial
+`Projection` rows survive a mid-PUBLISH failure, and that an injected
+`httpx.HTTPStatusError` with a fake secret embedded in its request URL
+never appears in the stored failure detail.
+
+`grade_slate_run()` received the same fix (its own `except` block calls
+`_record_failed_run()` too) but no dedicated new test -- its only real
+stage is GRADE, and the mechanism is identical to `run_slate()`'s,
+already covered thoroughly there.
+
+Verified: 320 tests passing (315 + 5) against a fresh scratch database,
+`alembic upgrade head`/`check` clean, ruff/mypy/guardrails clean. No
+stray Postgres connections/locks after the full suite (confirmed via
+`pg_stat_activity`).
+
+Remaining limitation: `run_slate()`'s own INGEST-through-PUBLISH business
+data (raw ingestion rows, features, projections) for a failed run is
+still atomically all-or-nothing (correctly rolled back) -- a run that
+fails late (e.g. mid-PUBLISH) does not get to keep the real data an
+earlier stage (e.g. INGEST) genuinely fetched from a live, quota-metered
+vendor API; a retry re-fetches it. Not changed here (out of this fix's
+scope -- the directive asks for durable FAILURE TRACKING, not durable
+partial business data, and the two are structurally distinct in this
+codebase, confirmed by the same audit that found this bug).
