@@ -21,7 +21,7 @@ from __future__ import annotations
 import gzip
 import json
 from collections.abc import Generator
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 from sqlalchemy import delete
@@ -38,10 +38,15 @@ from cassandra.historical.dataset_builder import (
 )
 
 PITCHER_ID = 900010101
+OPPONENT_PITCHER_ID = 900010102
 GAME_PKS = [900010001, 900010002, 900010003, 900010004]
 WEATHER_GAME_PKS = [900010010, 900010011, 900010012, 900010013, 900010014]
+SAME_GAME_PKS = [900010020, 900010021]
+LEAGUE_VENUE_GAME_PKS = [900010040, 900010041, 900010042, 900010043]
 VENUE_MLB_ID = 900099
 VENUE_ID = "test-dataset-builder-venue"
+LEAGUE_VENUE_MLB_ID = 900098
+LEAGUE_VENUE_ID = "test-dataset-builder-league-venue"
 SOURCE_ID = "test_dataset_builder_source"
 
 
@@ -53,13 +58,13 @@ def dataset_session(db_engine, tmp_path) -> Generator[Session, None, None]:
         yield session
     finally:
         session.rollback()
-        all_pks = GAME_PKS + WEATHER_GAME_PKS
+        all_pks = GAME_PKS + WEATHER_GAME_PKS + SAME_GAME_PKS + LEAGUE_VENUE_GAME_PKS
         session.execute(delete(HistoricalPitcherStart).where(HistoricalPitcherStart.mlb_game_pk.in_(all_pks)))
         session.execute(
             delete(HistoricalWeatherObservation).where(HistoricalWeatherObservation.mlb_game_pk.in_(all_pks))
         )
         session.execute(delete(Game).where(Game.mlb_game_pk.in_(all_pks)))
-        session.execute(delete(Venue).where(Venue.venue_id == VENUE_ID))
+        session.execute(delete(Venue).where(Venue.venue_id.in_([VENUE_ID, LEAGUE_VENUE_ID])))
         session.commit()
         session.close()
 
@@ -72,6 +77,19 @@ def _seed_source(session: Session) -> None:
 
 def _seed_venue(session: Session) -> None:
     stmt = pg_insert(Venue).values(venue_id=VENUE_ID, mlb_venue_id=VENUE_MLB_ID, name="Test Dataset Park")
+    stmt = stmt.on_conflict_do_nothing(index_elements=[Venue.venue_id])
+    session.execute(stmt)
+
+
+def _seed_league_venue(session: Session) -> None:
+    """A SECOND venue, distinct from VENUE_ID -- without this, VENUE_ID's
+    own accumulated stats WOULD BE the entire league total (the exact
+    single-venue pitfall documented in test_park_factors.py), making
+    venue_rate/league_rate trivially 1.0 regardless of any leak and unable
+    to detect one. See _seed_threshold_clearing_games."""
+    stmt = pg_insert(Venue).values(
+        venue_id=LEAGUE_VENUE_ID, mlb_venue_id=LEAGUE_VENUE_MLB_ID, name="Test League Baseline Park"
+    )
     stmt = stmt.on_conflict_do_nothing(index_elements=[Venue.venue_id])
     session.execute(stmt)
 
@@ -125,14 +143,17 @@ def _seed_start(
     strikeouts: int,
     is_starter: bool = True,
     game_status: str = "Final",
+    player_mlb_id: int = PITCHER_ID,
+    team_mlb_id: int = 900020001,
+    opponent_mlb_id: int = 900020002,
 ) -> None:
     session.add(
         HistoricalPitcherStart(
             mlb_game_pk=mlb_game_pk,
             game_date=game_date,
-            player_mlb_id=PITCHER_ID,
-            team_mlb_id=900020001,
-            opponent_mlb_id=900020002,
+            player_mlb_id=player_mlb_id,
+            team_mlb_id=team_mlb_id,
+            opponent_mlb_id=opponent_mlb_id,
             is_starter=is_starter,
             batters_faced=batters_faced,
             strikeouts=strikeouts,
@@ -395,3 +416,199 @@ def test_park_factor_available_flips_true_once_the_venue_clears_the_sample_thres
     # If this row's own 50% outcome had leaked into its own factor, this
     # would be pulled well above 1.0.
     assert last_row["park_k_factor"] == 1.0
+
+
+# --- 1A: same-game / same-date park-factor leakage regression tests -------
+#
+# Regression for a real bug found by an independent audit: build_training_
+# dataset() used to read-then-immediately-record each row's park factor
+# one at a time, with `targets` ordered only by game_date (a plain date,
+# no secondary tiebreaker). Two rows sharing a game_date -- including the
+# opposing starter in the SAME game -- had no guaranteed relative order,
+# so whichever one happened to be processed second could see the first's
+# own outcome already folded into its park factor. The fix batches by
+# date: every row for a date reads state frozen as of the prior date, and
+# only after the WHOLE date's rows are written does that date's outcomes
+# get folded in. These tests prove that property directly, using the
+# signature the bug would produce if it were still present: two same-
+# date rows disagreeing with each other depending on (nondeterministic)
+# database row order.
+#
+# ("a game from a prior date CAN affect a later date" is already proven
+# by test_park_factor_available_flips_true_once_the_venue_clears_the_
+# sample_threshold_and_never_leaks above -- games 1-4 clearing the
+# threshold for game 5 IS that cross-date propagation working correctly.)
+
+
+def _seed_threshold_clearing_games(session: Session, *, before: date) -> None:
+    """4 prior-date games at VENUE_ID, 100 BF/20 K each (400 BF total,
+    exactly MIN_BATTERS_FACED_FOR_PARK_FACTOR, a 20% K rate) -- clears the
+    park-factor sample-size threshold for any row dated on/after `before`
+    without itself being close enough to collide with it. Also seeds 4
+    prior-date games at a SECOND venue (LEAGUE_VENUE_ID) at an 18% K rate,
+    so the league-wide rate (19%, both venues combined) is DIFFERENT from
+    VENUE_ID's own 20% -- giving VENUE_ID a real, non-1.0 park factor
+    (~1.05) that a leak would visibly perturb. Without this second venue,
+    VENUE_ID's own accumulated stats WOULD BE the entire league total,
+    making venue_rate/league_rate trivially 1.0 regardless of any leak --
+    this exact pitfall was caught by deliberately re-running these tests
+    against the pre-fix code and confirming they failed to catch the bug
+    on the first attempt (single-venue setup), then fixed by adding this
+    second venue."""
+    for i in range(4):
+        game_date = before - timedelta(days=4 - i)
+        _seed_game(session, mlb_game_pk=900010030 + i, game_date=game_date, season=1899, venue_id=VENUE_ID)
+        _seed_start(
+            session,
+            mlb_game_pk=900010030 + i,
+            game_date=game_date,
+            batters_faced=100,
+            strikeouts=20,
+            player_mlb_id=900010199 - i,  # distinct pitcher per prior game, irrelevant to this test
+        )
+        _seed_game(
+            session,
+            mlb_game_pk=LEAGUE_VENUE_GAME_PKS[i],
+            game_date=game_date,
+            season=1899,
+            venue_id=LEAGUE_VENUE_ID,
+        )
+        _seed_start(
+            session,
+            mlb_game_pk=LEAGUE_VENUE_GAME_PKS[i],
+            game_date=game_date,
+            batters_faced=100,
+            strikeouts=18,
+            player_mlb_id=900010299 - i,
+        )
+
+
+def test_two_starters_in_the_same_game_get_identical_park_factors_never_leaking_into_each_other(
+    dataset_session, tmp_path
+):
+    _seed_source(dataset_session)
+    _seed_venue(dataset_session)
+    _seed_league_venue(dataset_session)
+    same_date = date(1899, 5, 1)
+    _seed_threshold_clearing_games(dataset_session, before=same_date)
+
+    # Two starters, same real game, same date, same venue -- wildly
+    # different outcomes so a leak in either direction would be visible
+    # as a difference between the two rows' park_k_factor.
+    _seed_game(
+        dataset_session, mlb_game_pk=SAME_GAME_PKS[0], game_date=same_date, season=1899, venue_id=VENUE_ID
+    )
+    _seed_start(
+        dataset_session,
+        mlb_game_pk=SAME_GAME_PKS[0],
+        game_date=same_date,
+        batters_faced=100,
+        strikeouts=1,  # extreme low K rate
+        player_mlb_id=PITCHER_ID,
+        team_mlb_id=900020001,
+        opponent_mlb_id=900020002,
+    )
+    _seed_start(
+        dataset_session,
+        mlb_game_pk=SAME_GAME_PKS[0],
+        game_date=same_date,
+        batters_faced=100,
+        strikeouts=99,  # extreme high K rate
+        player_mlb_id=OPPONENT_PITCHER_ID,
+        team_mlb_id=900020002,
+        opponent_mlb_id=900020001,
+    )
+    dataset_session.flush()
+
+    manifest = build_training_dataset(dataset_session, seasons=[1899], output_dir=tmp_path)
+    rows = _read_rows(manifest.output_path)
+    by_player = {r["player_mlb_id"]: r for r in rows if r["mlb_game_pk"] == SAME_GAME_PKS[0]}
+
+    assert len(by_player) == 2
+    home_row = by_player[PITCHER_ID]
+    away_row = by_player[OPPONENT_PITCHER_ID]
+    assert home_row["park_factor_available"] is True
+    assert away_row["park_factor_available"] is True
+    # The real assertion: identical, regardless of which one the database
+    # happened to iterate first. If either row's own (or the other's)
+    # extreme outcome had leaked in, these would differ.
+    assert home_row["park_k_factor"] == away_row["park_k_factor"]
+
+
+def test_two_different_games_on_the_same_date_get_identical_park_factors_never_leaking_into_each_other(
+    dataset_session, tmp_path
+):
+    _seed_source(dataset_session)
+    _seed_venue(dataset_session)
+    _seed_league_venue(dataset_session)
+    same_date = date(1899, 5, 1)
+    _seed_threshold_clearing_games(dataset_session, before=same_date)
+
+    # Two DIFFERENT games (distinct mlb_game_pk), same date, same venue --
+    # e.g. a doubleheader, or simply two games this backfill has no
+    # reliable per-game Final-timestamp to order relative to each other.
+    for game_pk, strikeouts, player_mlb_id in (
+        (SAME_GAME_PKS[0], 1, PITCHER_ID),
+        (SAME_GAME_PKS[1], 99, OPPONENT_PITCHER_ID),
+    ):
+        _seed_game(dataset_session, mlb_game_pk=game_pk, game_date=same_date, season=1899, venue_id=VENUE_ID)
+        _seed_start(
+            dataset_session,
+            mlb_game_pk=game_pk,
+            game_date=same_date,
+            batters_faced=100,
+            strikeouts=strikeouts,
+            player_mlb_id=player_mlb_id,
+        )
+    dataset_session.flush()
+
+    manifest = build_training_dataset(dataset_session, seasons=[1899], output_dir=tmp_path)
+    rows = _read_rows(manifest.output_path)
+    by_game = {r["mlb_game_pk"]: r for r in rows if r["mlb_game_pk"] in SAME_GAME_PKS}
+
+    assert len(by_game) == 2
+    assert by_game[SAME_GAME_PKS[0]]["park_factor_available"] is True
+    assert by_game[SAME_GAME_PKS[1]]["park_factor_available"] is True
+    assert by_game[SAME_GAME_PKS[0]]["park_k_factor"] == by_game[SAME_GAME_PKS[1]]["park_k_factor"]
+
+
+def test_park_factors_are_deterministic_across_repeated_builds(dataset_session, tmp_path):
+    """Same seed data, built twice in a row -- every row's park_k_factor
+    must match exactly across both builds, regardless of any
+    nondeterministic database row order for equal game_date values."""
+    _seed_source(dataset_session)
+    _seed_venue(dataset_session)
+    _seed_league_venue(dataset_session)
+    same_date = date(1899, 5, 1)
+    _seed_threshold_clearing_games(dataset_session, before=same_date)
+    _seed_game(
+        dataset_session, mlb_game_pk=SAME_GAME_PKS[0], game_date=same_date, season=1899, venue_id=VENUE_ID
+    )
+    _seed_start(
+        dataset_session,
+        mlb_game_pk=SAME_GAME_PKS[0],
+        game_date=same_date,
+        batters_faced=100,
+        strikeouts=1,
+        player_mlb_id=PITCHER_ID,
+    )
+    _seed_start(
+        dataset_session,
+        mlb_game_pk=SAME_GAME_PKS[0],
+        game_date=same_date,
+        batters_faced=100,
+        strikeouts=99,
+        player_mlb_id=OPPONENT_PITCHER_ID,
+    )
+    dataset_session.flush()
+
+    manifest_a = build_training_dataset(dataset_session, seasons=[1899], output_dir=tmp_path)
+    manifest_b = build_training_dataset(dataset_session, seasons=[1899], output_dir=tmp_path)
+
+    rows_a = {
+        (r["mlb_game_pk"], r["player_mlb_id"]): r["park_k_factor"] for r in _read_rows(manifest_a.output_path)
+    }
+    rows_b = {
+        (r["mlb_game_pk"], r["player_mlb_id"]): r["park_k_factor"] for r in _read_rows(manifest_b.output_path)
+    }
+    assert rows_a == rows_b

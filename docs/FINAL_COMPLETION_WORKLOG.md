@@ -239,3 +239,58 @@ guardrails clean; 26 frontend tests passing, typecheck/lint clean.
 
 Remaining limitation: no vendor-specific payout/refund policy is modeled
 (deliberately, see above) -- Tyler's decision, not guessed at.
+
+### 1A -- fixed
+
+Confirmed real by direct code tracing (see Phase 0 findings above) before
+touching anything. Fix: `build_training_dataset()`'s main loop now groups
+`targets` by `game_date` (via `itertools.groupby` -- `targets` is already
+SQL-ordered by `game_date.asc()`, so this requires no extra sort). Every
+row in a date's group reads `park_factor_accumulator.park_factor_for()`
+against state frozen as of the END of the PRIOR date only; all of that
+date's rows are written to the output file; only THEN are that whole
+date's outcomes folded into the accumulator via `record_outcome()`, made
+visible to a strictly LATER date. This means two rows sharing a
+`game_date` -- including the opposing starter in the same game -- are
+structurally guaranteed to see identical park-factor state, regardless of
+whatever (arbitrary, DB-dependent) order the database happens to return
+them in. Deliberately conservative: even two different games on the same
+date that might have a real-world provable ordering are still treated as
+mutually invisible, since this backfill has no reliable per-game
+wall-clock "became Final" timestamp to justify anything finer-grained.
+
+`DATASET_BUILDER_VERSION` bumped 0.2.0 -> 0.3.0 per the directive's
+explicit instruction not to let the buggy and fixed behavior share a
+version string. No dataset artifact was ever produced under 0.2.0 in this
+repository or this sandbox (`data/training_datasets/` is gitignored and
+none existed locally at the time of this fix), so there was nothing to
+invalidate/rebuild/re-evaluate beyond the version bump itself.
+
+Tests: 3 new integration tests (`test_dataset_builder.py`) -- two
+starters in the same game get identical park factors, two different
+games on the same date get identical park factors, and repeated builds
+of the same seed data are deterministic. **Verification discipline
+applied and it caught a real mistake in my own first test design**: my
+first attempt at these tests seeded prior data at only ONE venue, which
+passed even against the OLD BUGGY code -- because with a single venue,
+`venue_rate` always trivially equals `league_rate` by construction
+(exactly the pitfall `park_factors.py`'s own unit tests had already
+taught earlier this session), so no leak could ever produce a numeric
+skew large enough to fail the assertion. Caught by deliberately
+`git stash`-ing the fix and re-running the new tests against the
+pre-fix code before considering them done -- they passed, which should
+never happen for a real regression test. Fixed by adding a second seeded
+venue with a different baseline strikeout rate so `VENUE_ID`'s park
+factor is a real, non-1.0 number a leak would visibly perturb; re-ran the
+stash test again and confirmed the two leakage tests now fail cleanly
+against the pre-fix code (`1.0526... != 0.9529...`) before restoring the
+fix and confirming they pass.
+
+Verified: 315 tests passing (312 + 3) against a fresh scratch database,
+`alembic upgrade head`/`check` clean, ruff/mypy/guardrails clean.
+
+Remaining limitation: the date-level batching is deliberately
+conservative (see above) -- a future pass could compute real per-game
+Final timestamps (if a reliable source existed) to allow same-date, later
+games to see earlier same-date games' outcomes; not attempted here since
+no such reliable timestamp source currently exists for this backfill.

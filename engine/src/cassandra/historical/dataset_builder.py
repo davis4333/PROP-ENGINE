@@ -27,6 +27,7 @@ import json
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
@@ -45,13 +46,22 @@ from cassandra.historical.availability import (
 )
 from cassandra.historical.park_factors import ParkFactorAccumulator
 
-# Bumped from 0.1.0: park_factor/weather rows now carry real computed
-# values (see park_factors.py, db/models/historical.py's
-# HistoricalWeatherObservation) instead of being wholesale excluded --
-# this is a real output-schema change, not a cosmetic one, so a dataset
-# built under the old version is not silently equivalent to one built
-# under this one.
-DATASET_BUILDER_VERSION = "training-dataset-builder-0.2.0"
+# Bumped from 0.1.0 to 0.2.0: park_factor/weather rows now carry real
+# computed values (see park_factors.py, db/models/historical.py's
+# HistoricalWeatherObservation) instead of being wholesale excluded.
+# Bumped again to 0.3.0: fixed a real same-game/same-date park-factor
+# leakage bug (a same-date row -- including the opposing starter in the
+# SAME game -- could see another same-date row's own outcome already
+# folded into its park factor; see the accumulator comment above
+# build_training_dataset() for the full explanation and fix). Any dataset
+# built under 0.2.0 has this bug and must not be treated as equivalent to
+# one built under 0.3.0+ -- always rebuild rather than reuse a 0.2.0
+# dataset for anything park-factor-sensitive (no such dataset was ever
+# checked into this repository -- data/training_datasets/ is gitignored
+# and no local artifact from 0.2.0 existed at the time of this fix, so
+# there is nothing to migrate, only a version bump to prevent future
+# confusion).
+DATASET_BUILDER_VERSION = "training-dataset-builder-0.3.0"
 DEFAULT_OUTPUT_DIR = Path("data/training_datasets")
 
 # Feature groups the spec calls for that this backfill pass does not yet
@@ -192,16 +202,37 @@ def build_training_dataset(
         .scalars()
         .all()
     }
-    # Chronological single-pass accumulator (targets is already ordered by
-    # game_date.asc()) -- scoped to this build's own season/game_type
-    # population (the same rows this dataset is built from), not the full
-    # unrestricted historical_pitcher_starts table. This means an early
-    # row in a season-restricted build (e.g. seasons=[2024] only, omitting
-    # 2023) can under-report park-factor availability versus a full-range
-    # build that would have more prior context at the same venue -- an
-    # honest completeness gap, not a leakage risk: MIN_BATTERS_FACED_FOR_
-    # PARK_FACTOR always reports "unavailable" rather than ever leaking a
-    # future or out-of-scope game's outcome into an early row's factor.
+    # Chronological, DATE-GROUPED accumulator -- scoped to this build's own
+    # season/game_type population (the same rows this dataset is built
+    # from), not the full unrestricted historical_pitcher_starts table.
+    # This means an early row in a season-restricted build (e.g.
+    # seasons=[2024] only, omitting 2023) can under-report park-factor
+    # availability versus a full-range build that would have more prior
+    # context at the same venue -- an honest completeness gap, not a
+    # leakage risk: MIN_BATTERS_FACED_FOR_PARK_FACTOR always reports
+    # "unavailable" rather than ever leaking a future or out-of-scope
+    # game's outcome into an early row's factor.
+    #
+    # Grouped by game_date (not processed row-by-row) -- found and fixed
+    # after an audit: `targets` is only ordered by game_date.asc(), a
+    # plain date with no secondary tiebreaker, so two starters from the
+    # SAME game (home + away, same venue, same date) have no guaranteed
+    # relative order. Reading-then-immediately-recording per row let
+    # whichever one was processed second see the first's outcome already
+    # folded into its own park factor -- a real self-referential leakage
+    # bug. The conservative, provably-safe fix: every row sharing a
+    # game_date reads park-factor state frozen as of the END of the PRIOR
+    # date (never any other row from its own date, whether that's the
+    # opposing starter in the same game or an unrelated game the same
+    # day), and only after every row for that date has been written does
+    # that whole date's outcomes get folded in for a STRICTLY LATER date
+    # to see. This is deliberately conservative: even two games on the
+    # same date that could theoretically have a provable real-world
+    # ordering (one's box score final before the other's first pitch) are
+    # still treated as mutually invisible, since this backfill has no
+    # reliable per-game "actually became Final at wall-clock time X" data
+    # to justify anything finer-grained (see docs/HISTORICAL_AVAILABILITY_
+    # POLICY.md).
     park_factor_accumulator = ParkFactorAccumulator()
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -212,85 +243,101 @@ def build_training_dataset(
     park_factor_available_count = 0
     weather_available_count = 0
     with gzip.open(output_path, "wt", encoding="utf-8") as fh:
-        for start, game_type, season, venue_id in targets:
-            prior = eligible_prior_starts(
-                session, player_mlb_id=start.player_mlb_id, before_date=start.game_date
-            )
-            shims = _as_shims(prior)
-            bf_result = compute_expected_bf(shims)
-            k_rate_result = compute_recent_k_rate(shims)
-            rest_days = (start.game_date - prior[0].game_date).days if prior else None
-            tier_counts[k_rate_result.tier] = tier_counts.get(k_rate_result.tier, 0) + 1
+        for _game_date, date_targets_iter in groupby(targets, key=lambda t: t[0].game_date):
+            date_targets = list(date_targets_iter)
+            date_rows: list[dict[str, Any]] = []
+            date_outcomes: list[tuple[int | None, int | None, int | None]] = []
 
-            venue_mlb_id = venue_mlb_id_by_venue_id.get(venue_id) if venue_id else None
-            # Read BEFORE record_outcome below -- this row's own outcome
-            # must never contribute to its own park factor.
-            park_result = park_factor_accumulator.park_factor_for(venue_mlb_id)
-            weather_row = weather_by_game_pk.get(start.mlb_game_pk)
-            weather_temp = weather_row.temp_f if weather_row is not None else None
-            weather_is_available = weather_temp is not None
-            weather_adjustment = compute_weather_adjustment(
-                _WeatherShim(temp_f=float(weather_temp)) if weather_temp is not None else None
-            )
+            for start, game_type, season, venue_id in date_targets:
+                prior = eligible_prior_starts(
+                    session, player_mlb_id=start.player_mlb_id, before_date=start.game_date
+                )
+                shims = _as_shims(prior)
+                bf_result = compute_expected_bf(shims)
+                k_rate_result = compute_recent_k_rate(shims)
+                rest_days = (start.game_date - prior[0].game_date).days if prior else None
+                tier_counts[k_rate_result.tier] = tier_counts.get(k_rate_result.tier, 0) + 1
 
-            row = {
-                # Provenance -- docs/HISTORICAL_AVAILABILITY_POLICY.md's
-                # "Provenance fields every training row must carry".
-                "dataset_id": dataset_id,
-                "dataset_version": f"{DATASET_BUILDER_VERSION}+{AVAILABILITY_POLICY_VERSION}",
-                "feature_set_version": FEATURE_SET_VERSION,
-                "reconstruction_policy_version": AVAILABILITY_POLICY_VERSION,
-                # The real-world boundary eligible_prior_starts() actually
-                # enforced for this row: the target game's own date --
-                # only strictly-earlier Final starts were visible.
-                "cutoff_timestamp": start.game_date.isoformat(),
-                "capture_mode": start.capture_mode,
-                "strict_live_compatible": True,
-                "backfill_run_id": start.backfill_run_id,
-                "mlb_game_pk": start.mlb_game_pk,
-                "game_date": start.game_date.isoformat(),
-                "season": season,
-                "game_type": game_type,
-                "player_mlb_id": start.player_mlb_id,
-                "team_mlb_id": start.team_mlb_id,
-                "opponent_mlb_id": start.opponent_mlb_id,
-                "expected_bf": bf_result.value,
-                "expected_bf_tier": bf_result.tier,
-                "expected_bf_starts_used": bf_result.starts_used,
-                "recent_k_rate": k_rate_result.value,
-                "recent_k_rate_tier": k_rate_result.tier,
-                "recent_k_rate_starts_used": k_rate_result.starts_used,
-                "rest_days": rest_days,
-                "prior_starts_available": len(prior),
-                "park_k_factor": park_result.value,
-                "park_factor_available": park_result.available,
-                "weather_adjustment": weather_adjustment,
-                "weather_available": weather_is_available,
-                # WEATHER_SOURCE_ACTUAL, not omitted, when available -- see
-                # that constant's docstring for why this is flagged
-                # per-row rather than silently assumed equivalent to what
-                # the live pipeline sees.
-                "weather_source": WEATHER_SOURCE_ACTUAL if weather_is_available else None,
-                # Still real gaps -- see EXCLUDED_FEATURE_GROUPS.
-                "lineup_available": False,
-                "umpire_available": False,
-                "actual_strikeouts": start.strikeouts,
-                "actual_batters_faced": start.batters_faced,
-                "actual_pitches": start.pitches_thrown,
-                "actual_innings_pitched": (
-                    float(start.innings_pitched) if start.innings_pitched is not None else None
-                ),
-            }
-            fh.write(json.dumps(row) + "\n")
-            row_count += 1
-            if row["park_factor_available"]:
-                park_factor_available_count += 1
-            if row["weather_available"]:
-                weather_available_count += 1
-            # AFTER writing the row -- this game's own outcome becomes
-            # eligible for the NEXT (strictly later) row's park factor,
-            # never this one's.
-            park_factor_accumulator.record_outcome(venue_mlb_id, start.batters_faced, start.strikeouts)
+                venue_mlb_id = venue_mlb_id_by_venue_id.get(venue_id) if venue_id else None
+                # Reads state frozen as of the PRIOR date only -- see the
+                # accumulator comment above. Every row in this date's
+                # group reads this exact same state, regardless of the
+                # (arbitrary, DB-dependent) order date_targets happens to
+                # iterate in.
+                park_result = park_factor_accumulator.park_factor_for(venue_mlb_id)
+                weather_row = weather_by_game_pk.get(start.mlb_game_pk)
+                weather_temp = weather_row.temp_f if weather_row is not None else None
+                weather_is_available = weather_temp is not None
+                weather_adjustment = compute_weather_adjustment(
+                    _WeatherShim(temp_f=float(weather_temp)) if weather_temp is not None else None
+                )
+
+                row = {
+                    # Provenance -- docs/HISTORICAL_AVAILABILITY_POLICY.md's
+                    # "Provenance fields every training row must carry".
+                    "dataset_id": dataset_id,
+                    "dataset_version": f"{DATASET_BUILDER_VERSION}+{AVAILABILITY_POLICY_VERSION}",
+                    "feature_set_version": FEATURE_SET_VERSION,
+                    "reconstruction_policy_version": AVAILABILITY_POLICY_VERSION,
+                    # The real-world boundary eligible_prior_starts() actually
+                    # enforced for this row: the target game's own date --
+                    # only strictly-earlier Final starts were visible.
+                    "cutoff_timestamp": start.game_date.isoformat(),
+                    "capture_mode": start.capture_mode,
+                    "strict_live_compatible": True,
+                    "backfill_run_id": start.backfill_run_id,
+                    "mlb_game_pk": start.mlb_game_pk,
+                    "game_date": start.game_date.isoformat(),
+                    "season": season,
+                    "game_type": game_type,
+                    "player_mlb_id": start.player_mlb_id,
+                    "team_mlb_id": start.team_mlb_id,
+                    "opponent_mlb_id": start.opponent_mlb_id,
+                    "expected_bf": bf_result.value,
+                    "expected_bf_tier": bf_result.tier,
+                    "expected_bf_starts_used": bf_result.starts_used,
+                    "recent_k_rate": k_rate_result.value,
+                    "recent_k_rate_tier": k_rate_result.tier,
+                    "recent_k_rate_starts_used": k_rate_result.starts_used,
+                    "rest_days": rest_days,
+                    "prior_starts_available": len(prior),
+                    "park_k_factor": park_result.value,
+                    "park_factor_available": park_result.available,
+                    "weather_adjustment": weather_adjustment,
+                    "weather_available": weather_is_available,
+                    # WEATHER_SOURCE_ACTUAL, not omitted, when available --
+                    # see that constant's docstring for why this is flagged
+                    # per-row rather than silently assumed equivalent to
+                    # what the live pipeline sees.
+                    "weather_source": WEATHER_SOURCE_ACTUAL if weather_is_available else None,
+                    # Still real gaps -- see EXCLUDED_FEATURE_GROUPS.
+                    "lineup_available": False,
+                    "umpire_available": False,
+                    "actual_strikeouts": start.strikeouts,
+                    "actual_batters_faced": start.batters_faced,
+                    "actual_pitches": start.pitches_thrown,
+                    "actual_innings_pitched": (
+                        float(start.innings_pitched) if start.innings_pitched is not None else None
+                    ),
+                }
+                date_rows.append(row)
+                date_outcomes.append((venue_mlb_id, start.batters_faced, start.strikeouts))
+
+            for row in date_rows:
+                fh.write(json.dumps(row) + "\n")
+                row_count += 1
+                if row["park_factor_available"]:
+                    park_factor_available_count += 1
+                if row["weather_available"]:
+                    weather_available_count += 1
+
+            # AFTER every row for this date has been written -- this
+            # date's outcomes become eligible for a STRICTLY LATER date's
+            # park factor, never this date's own rows (see the
+            # accumulator comment above for why even different games on
+            # the same date are treated as mutually invisible).
+            for venue_mlb_id, batters_faced, strikeouts in date_outcomes:
+                park_factor_accumulator.record_outcome(venue_mlb_id, batters_faced, strikeouts)
 
     manifest = DatasetManifest(
         dataset_id=dataset_id,
