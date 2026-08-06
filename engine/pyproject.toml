@@ -21,6 +21,16 @@ dependencies = [
 cassandra = "cassandra.cli.main:app"
 
 [project.optional-dependencies]
+# Only the historical challenger-model trainer (historical/
+# challenger_poisson.py) needs this -- the live pipeline/API never
+# imports it. Kept as its own extra (not folded into `dev`) so the
+# dependency's purpose is self-documenting; installed alongside `dev` in
+# every environment that installs `dev` today (CI, Replit dev + deploy --
+# see scripts/replit_start.sh, .github/workflows/ci.yml, Makefile) so it
+# doesn't need special-casing or lazy imports at every call site.
+training = [
+    "numpy>=1.26",
+]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",

@@ -41,7 +41,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install engine
-        run: uv pip install --system -e "./engine[dev]"
+        run: uv pip install --system -e "./engine[dev,training]"
 
       - name: Lint (ruff)
         run: ruff check engine/src engine/tests scripts

@@ -321,28 +321,51 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   2023 backfill data: MAE 1.95 strikeouts, well-calibrated across all 6
   thresholds tested (see `docs/TRAINING_READINESS_REPORT.md` for the full
   numbers).
-- **Not yet built**: training a challenger model (Poisson regression,
-  negative-binomial) or walk-forward validation -- this environment has
-  no numpy/scipy/statsmodels installed, and adding one for a half-built
-  feature wasn't done in this pass. See
-  `docs/TRAINING_READINESS_REPORT.md` for the explicit statement of what
-  exists vs. doesn't. Also not yet collected/implemented (reported
-  honestly, not silently omitted --
-  every dataset manifest/row records these as unavailable, and
-  `audit-historical-coverage` surfaces them too): pitch-level/plate-
-  appearance detail, historical weather, park factors computed from
-  prior completed games, opponent rolling strikeout context, player
-  identity resolution for backfilled pitchers (so pitcher handedness
-  isn't available), and the `RETROSPECTIVE_ENRICHED` tier (nothing
-  enriched exists yet to build it from).
+- **A Poisson-regression challenger + walk-forward validation are real
+  and implemented**: `historical/challenger_poisson.py` fits a log-link
+  Poisson GLM via IRLS (`fit_poisson_regression`) over the same reduced
+  feature set the baseline uses, implementing `StrikeoutModel` so it's a
+  drop-in for anything the baseline is (ADR 0003). Needs the new
+  `training` extra (`numpy`; `pyproject.toml` -- kept out of the live
+  pipeline's core dependencies, lazily imported in the CLI command so
+  every other command keeps working if it's ever missing).
+  `historical/walk_forward.py`'s `run_walk_forward_validation()` splits a
+  dataset into expanding-window folds (never k-fold cross-validation,
+  which would leak future data into past folds), fits a fresh challenger
+  per fold, and evaluates both models against that fold's held-out rows
+  -- the strictly-earlier-training-than-validation guarantee has its own
+  dedicated test. CLI: `train-walk-forward-challenger`. **Verified
+  against real 2023-2024 backfill data (9,718 rows, 5 folds run): the
+  challenger beat the baseline on every fold** -- aggregate MAE 1.879
+  (challenger) vs. 1.931 (baseline), a consistent ~2.7% improvement. See
+  `docs/TRAINING_READINESS_REPORT.md` for the full per-fold numbers and
+  explicit caveats (reduced feature set, one run, no significance test,
+  no promotion mechanism exists). **No automatic promotion anywhere** --
+  every report is `HISTORICAL_RECONSTRUCTION`-labeled and written to its
+  own frozen file; nothing in this repository ever writes a challenger's
+  predictions to `projections`/`grades`.
+- **Not yet built**: negative-binomial/gradient-boosted challenger
+  alternatives, a model registry (each run's report is frozen and
+  versioned individually, but there's no index across runs or promotion-
+  decision tracking). See `docs/TRAINING_READINESS_REPORT.md` for the
+  full "what's still not built" list. Also not yet collected/implemented
+  (reported honestly, not silently omitted -- every dataset manifest/row
+  records these as unavailable, and `audit-historical-coverage` surfaces
+  them too): pitch-level/plate-appearance detail, historical weather,
+  park factors computed from prior completed games, opponent rolling
+  strikeout context, player identity resolution for backfilled pitchers
+  (so pitcher handedness isn't available), and the
+  `RETROSPECTIVE_ENRICHED` tier (nothing enriched exists yet to build it
+  from).
 - Backfill run status at the point this batch of work was committed:
   see the session's final report / `docs/HISTORICAL_COVERAGE_REPORT.md`
   for the exact numbers -- a full 2023-present backfill (~11,100 games
   discovered) takes on the order of an hour or more against the free,
-  unmetered MLB Stats API and was still in progress (2023 essentially
-  complete, 2024 partial, 2025/2026 not yet reached) when this session's
-  context ended; it is resumable, so `cassandra backfill-mlb --resume`
-  with the same date range continues it exactly where it left off.
+  unmetered MLB Stats API and was still in progress (2023/2024
+  essentially complete, 2025 mostly covered, 2026 not yet reached as of
+  the last check in this session) when this session's context ended; it
+  is resumable, so `cassandra backfill-mlb --resume` with the same date
+  range continues it exactly where it left off.
 
 ### Fixture demo slate
 

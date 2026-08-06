@@ -1,11 +1,14 @@
 # Training Readiness Report
 
-**Status as of this pass: a real, leakage-tested training dataset can be
-built and the permanent baseline (`k-model-0.1.0`, unchanged) can be
-evaluated against it. No challenger model has been trained yet.** This is
-a direct, honest statement, not a placeholder — see below for exactly
-what's done, what's still blocking challenger training specifically, and
-what a real run against real 2023 backfill data actually produced.
+**Status as of this pass: a full walk-forward comparison exists.** A
+real, leakage-tested training dataset can be built; the permanent
+baseline (`k-model-0.1.0`, unchanged) and a Poisson-regression challenger
+can both be evaluated against it under time-ordered walk-forward
+validation. **The challenger beat the baseline on every fold of a real
+run against 2023-2024 backfill data** (numbers below) — the first
+challenger-vs-baseline result this project has ever produced. This is a
+direct, honest statement, not a placeholder — see below for exactly
+what's done, what's still not built, and the caveats on that result.
 
 ## What exists
 
@@ -13,8 +16,8 @@ what a real run against real 2023 backfill data actually produced.
   actually collecting real 2023-present MLB schedule/game, actual-starter,
   pitcher-outcome, and lineup data — see `HISTORICAL_COVERAGE_REPORT.md`
   / `audit-historical-coverage` for the current point-in-time coverage.
-  2023 (regular season) is essentially complete; 2024 partial; 2025/2026
-  not yet reached by this backfill pass.
+  2023/2024 (regular season) essentially complete; 2025 mostly covered;
+  2026 not yet reached by this backfill pass.
 - An implemented availability policy (`historical/availability.py`,
   `HISTORICAL_AVAILABILITY_POLICY.md`) — `eligible_prior_starts()`
   returns a pitcher's own prior Final starts strictly before the target
@@ -28,99 +31,120 @@ what a real run against real 2023 backfill data actually produced.
   test suite (`engine/tests/integration/test_dataset_builder.py`) proving
   a row's features are built only from strictly-earlier Final starts for
   that same pitcher, never the target game itself or a later game.
-- Verified against real backfill data in this session: building a
-  `STRICT_LIVE_COMPATIBLE` dataset for season 2023 (`game_types=("R",)`)
-  produced 4,860 real rows (`cassandra build-training-dataset --seasons
-  2023`), with `recent_k_rate` tier counts `recent_weighted=4456,
-  season_average=267, league_default=137` — i.e. the large majority of
-  rows have enough real prior-start history for the live pipeline's own
-  decay-weighted feature tier, not a fallback.
 - The permanent baseline model (`k-model-0.1.0`, `models/baseline.py`,
-  unmodified) can now be evaluated against a frozen dataset
+  unmodified) can be evaluated against a frozen dataset
   (`historical/evaluation.py`; CLI: `evaluate-baseline`) — MAE, RMSE,
   mean bias, Poisson deviance, and calibration/Brier score at 6
   illustrative half-integer thresholds (no real historical market lines
   exist, so "calibration" compares the model's own predicted P(over) to
   the realized frequency — see the module's docstring), broken out by
-  `recent_k_rate_tier`. Every report is written
-  `HISTORICAL_RECONSTRUCTION`-labeled to its own frozen JSON file, never
-  to `projections`/`grades`. Covered by a hand-checkable unit-test suite
+  `recent_k_rate_tier`. Covered by a hand-checkable unit-test suite
   (`engine/tests/unit/test_historical_evaluation.py`) with synthetic
   known-value assertions for every metric.
-  **Real result from this session** (`cassandra evaluate-baseline
-  --dataset-id <2023-season dataset>`, 4,860 real rows): MAE 1.95
-  strikeouts, RMSE 2.47, mean bias -0.10 (slightly under-projects on
-  average), mean Poisson deviance 1.43. Calibration was close across
-  every threshold tested (e.g. line 3.5: predicted P(over)=0.647 vs.
-  empirical 0.672; line 8.5: predicted 0.089 vs. empirical 0.088) — the
-  baseline's probability estimates track realized outcomes reasonably
-  well even on this reduced feature set, though this is one run against
-  partial-season data, not a validated production-readiness claim.
+- A Poisson-regression challenger model
+  (`historical/challenger_poisson.py`) — a log-link Poisson GLM fit via
+  IRLS (`fit_poisson_regression`) over the same reduced feature set the
+  baseline uses (`log1p(expected_bf)`, `recent_k_rate`, `rest_days` +
+  missingness indicator), implementing the same `StrikeoutModel`
+  interface as the baseline (ADR 0003) so the two are drop-in
+  interchangeable. Needs the `training` extra (`numpy`; see
+  `pyproject.toml` — kept out of the live pipeline's core dependencies,
+  installed alongside `dev` in every environment that already installs
+  `dev`). Covered by unit tests on synthetic data with a known generating
+  relationship (`engine/tests/unit/test_challenger_poisson.py`).
+- A time-ordered walk-forward validation harness
+  (`historical/walk_forward.py`; CLI: `train-walk-forward-challenger`) —
+  splits a dataset into N expanding-window folds (never k-fold
+  cross-validation, which would leak future data into past folds), fits
+  a fresh challenger on each fold's training rows only, and evaluates
+  both the challenger and the baseline against that fold's validation
+  rows. The core leakage guarantee (every fold's training rows are
+  strictly earlier than its validation rows) has its own dedicated test
+  (`engine/tests/unit/test_walk_forward.py`).
+- **Real result from this session** (`cassandra build-training-dataset
+  --seasons 2023,2024` → 9,718 rows → `cassandra
+  train-walk-forward-challenger --dataset-id ... --n-folds 6`, 5 folds
+  actually run, 1 skipped for insufficient early-season training data):
+  the challenger beat the baseline on **every fold**:
 
-## What's blocking challenger training specifically
+  | fold | validation window | baseline MAE | challenger MAE |
+  |------|--------------------|---------------|-----------------|
+  | 1 | 2023-05-29 .. 2023-08-02 | 1.9435 | 1.8959 |
+  | 2 | 2023-08-02 .. 2023-10-01 | 1.9362 | 1.8949 |
+  | 3 | 2023-10-01 .. 2024-05-28 | 1.8971 | 1.8349 |
+  | 4 | 2024-05-28 .. 2024-07-31 | 1.9536 | 1.9067 |
+  | 5 | 2024-07-31 .. 2024-09-30 | 1.9251 | 1.8626 |
 
-1. **No challenger-training code exists yet.** Fitting a real Poisson
-   regression or negative-binomial model (vs. the fixed-formula baseline)
-   needs a numerical optimizer; this environment currently has no numpy/
-   scipy/statsmodels installed, and adding a new dependency for a
-   half-built feature wasn't done in this pass rather than rushing it.
-   Walk-forward validation (train on earlier dates, validate on later
-   ones, roll forward) also needs its own harness, separate from the
-   dataset builder itself.
-2. **Several pregame feature domains this backfill was scoped to collect
-   aren't collected yet**: park factors calculated from prior games,
-   historical weather, opponent rolling strikeout context, pitch-level
-   detail (see `HISTORICAL_BACKFILL_DESIGN.md`'s "out of scope" list, and
-   every dataset manifest's `excluded_feature_groups`). A first model
-   comparison can reasonably proceed on the reduced feature set the
-   builder already emits (recent K-rate, expected batters faced, rest
-   days, identity) and report performance with-and-without the missing
-   groups once they exist, per the mission directive's own evaluation
-   requirements.
-3. **The backfill itself is still running** (2024 partial, 2025/2026 not
-   yet reached) — see `HISTORICAL_COVERAGE_REPORT.md`/
-   `audit-historical-coverage` for exact current coverage. A dataset
-   built today would need to honestly restrict `--seasons` to what's
-   actually well-covered (2023, optionally partial 2024) — every manifest
-   records exactly which seasons/game-types it drew from, so this is
-   checkable, not implied.
-4. **No player identity resolution has run for backfilled pitchers** —
+  Aggregate (row-weighted) MAE: baseline 1.9311, challenger 1.8790 — a
+  consistent ~2.7% improvement, not a fluke on one lucky fold.
+  Also verified separately: `evaluate-baseline` against a 2023-only
+  dataset (4,860 rows) gave MAE 1.95, RMSE 2.47, mean bias -0.10, and
+  calibration close to empirical at every threshold tested (e.g. line
+  3.5: predicted P(over)=0.647 vs. empirical 0.672; line 8.5: predicted
+  0.089 vs. empirical 0.088).
+
+## Caveats on that result (read before treating it as a promotion case)
+
+1. **Reduced feature set only.** Both models see the same 3 real
+   predictors (`expected_bf`, `recent_k_rate`, `rest_days`) — no park
+   factor, weather, opponent context, or pitch-level detail (Phase A
+   items 6-10, not yet backfilled). The relative comparison is fair (both
+   models are equally blind to the missing groups), but neither number
+   represents what either model could do with the full feature set the
+   product spec calls for.
+2. **One dataset, one fold count, one challenger family.** This is a
+   single walk-forward run, not a robustness study across different
+   `--n-folds` values, feature-engineering choices, or a
+   negative-binomial alternative. The ~2.7% MAE improvement is real but
+   modest, and a real promotion decision should see this replicated, not
+   taken on one run.
+3. **No statistical-significance test.** The report gives per-fold and
+   aggregate MAE, not a paired significance test (e.g. a paired
+   bootstrap) on whether the gap is distinguishable from noise at this
+   sample size.
+4. **`STRICT_LIVE_COMPATIBLE`, not production-validated.** This dataset
+   deliberately excludes lineup/park/weather features a promoted model
+   would need to be checked against the *actual* live feature pipeline's
+   real-time behavior (adapter failures, staleness, `MARKET_CONTEXT_
+   INCOMPLETE` reason codes, etc.), which a backtest can't see.
+5. **No automatic promotion exists, by design** — the mission directive
+   is explicit that production promotion requires human approval, and no
+   code path in this repository writes a challenger's predictions to
+   `projections`/`grades` under any circumstance.
+
+## What's still not built
+
+1. **Player identity resolution hasn't run for backfilled pitchers** —
    `players` is empty in this pass, so pitcher handedness (a spec'd
-   pregame feature) isn't available; every dataset row is keyed by raw
-   `player_mlb_id`/`team_mlb_id`/`opponent_mlb_id` integers instead.
-
-## What happens next (not done in this pass)
-
-1. Add a numerical-fitting dependency (numpy/scipy/statsmodels — a real
-   decision, not silently picked) and train at least one challenger count
-   model (Poisson regression, negative-binomial, or a gradient-boosted
-   count model) using time-ordered walk-forward validation — train on
-   earlier dates, validate on later dates, roll forward, never train on
-   games after the evaluation game.
-2. Produce a comparison report (challenger vs. the real baseline numbers
-   above) and recommendation, plus a model registry entry. **No automatic
-   promotion** — production promotion requires explicit human approval,
-   per the mission directive.
-3. Once weather/park-factor/opponent-context backfill exists (Phase A
-   items 6-10), rebuild datasets with those groups populated and re-run
-   `evaluate-baseline` to compare against the reduced-feature-set numbers
-   above.
-4. Historical market-line hit rate stays labeled "unavailable" unless
-   genuine historical lines are imported separately (out of scope for
-   this phase per the mission directive itself — a count model trains on
-   actual strikeout outcomes, not market lines).
+   pregame feature) isn't available in any dataset row.
+2. **A model registry.** Each walk-forward run writes its own frozen
+   comparison-report JSON (versioned by dataset_id + model_version), but
+   there's no index/registry tying multiple runs together, tracking
+   shadow-mode status, or recording a promotion decision once a human
+   makes one.
+3. **Negative-binomial or gradient-boosted challengers** — only the
+   Poisson-regression family has been implemented; the mission directive
+   lists negative-binomial as an alternative worth trying (Poisson
+   assumes variance equals the mean, which real strikeout counts may not
+   satisfy exactly).
+4. **Weather/park-factor/opponent-context backfill** (Phase A items
+   6-10) — once collected, rebuild datasets with those groups populated
+   and re-run both `evaluate-baseline` and
+   `train-walk-forward-challenger` to see whether the ~2.7% gap widens,
+   narrows, or reverses with richer features.
+5. **Historical market-line hit rate** stays labeled "unavailable" unless
+   genuine historical lines are imported separately (out of scope per the
+   mission directive itself — a count model trains on actual strikeout
+   outcomes, not market lines).
 
 ## Explicit statement
 
-A real baseline evaluation now exists (`k-model-0.1.0` against a 2023-
-season `STRICT_LIVE_COMPATIBLE` dataset, numbers above) — this is a
-backtest/historical reconstruction, not a walk-forward validation (the
-baseline is a fixed formula, not fit to any data, so there is no
-train/test split to violate). **No challenger model has been trained,
-and no walk-forward validation result exists anywhere in this
-repository as of this pass.** Nothing has been written to the live
-`projections`/`grades` tables by anything other than the live pipeline —
-every evaluation report this module produces is labeled
-`HISTORICAL_RECONSTRUCTION` and written to its own frozen file. This
-report exists specifically so that fact is unambiguous and checkable,
-not implied by silence.
+A real baseline evaluation and a real walk-forward challenger comparison
+both exist now, with real numbers from real 2023-2024 backfill data (see
+above). **No promotion, shadow-mode deployment, or production use of the
+challenger model exists anywhere in this repository.** Nothing has been
+written to the live `projections`/`grades` tables by anything other than
+the live pipeline — every report this subsystem produces is labeled
+`HISTORICAL_RECONSTRUCTION` and written to its own frozen file, never to
+a live table. This report exists specifically so that fact is unambiguous
+and checkable, not implied by silence.

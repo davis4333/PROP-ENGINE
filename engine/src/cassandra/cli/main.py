@@ -508,5 +508,63 @@ def evaluate_baseline_cmd(
     typer.echo(f"report written: {report_path}")
 
 
+@app.command(name="train-walk-forward-challenger")
+def train_walk_forward_challenger_cmd(
+    dataset_id: str = typer.Option(..., "--dataset-id"),
+    output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), "--output-dir"),
+    n_folds: int = typer.Option(5, "--n-folds"),
+) -> None:
+    """Trains a Poisson-regression challenger model under time-ordered
+    walk-forward validation against a frozen dataset, comparing it fold
+    by fold to the permanent, unmodified baseline (`k-model-0.1.0`) --
+    historical/walk_forward.py. Requires the `training` extra (numpy);
+    imported lazily here so every other CLI command keeps working
+    unmodified in an environment that hasn't installed it. **No automatic
+    promotion**: this only ever writes a frozen, HISTORICAL_RECONSTRUCTION
+    -labeled comparison report -- promoting a challenger to production
+    requires a human, per the mission directive."""
+    try:
+        from cassandra.historical.walk_forward import result_to_dict, run_walk_forward_validation
+    except ImportError as exc:
+        typer.echo(
+            "train-walk-forward-challenger needs the 'training' extra "
+            f"(numpy). Install with: pip install -e '.[training]'  ({exc})"
+        )
+        raise typer.Exit(code=1) from exc
+
+    data_path = Path(output_dir) / f"{dataset_id}.jsonl.gz"
+    if not data_path.exists():
+        typer.echo(f"No dataset file found: {data_path}")
+        raise typer.Exit(code=1)
+
+    rows: list[dict] = []
+    with gzip.open(data_path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json_module.loads(line))
+
+    result = run_walk_forward_validation(rows, dataset_id=dataset_id, n_folds=n_folds)
+
+    eval_dir = Path(output_dir) / "evaluations"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    report_path = eval_dir / f"walk_forward_{dataset_id}_{result.challenger_model_version}.json"
+    report_path.write_text(json_module.dumps(result_to_dict(result), indent=2))
+
+    typer.echo(
+        f"challenger={result.challenger_model_version}  dataset_id={dataset_id}\n"
+        f"folds_run={result.n_folds}  folds_skipped_insufficient_data="
+        f"{result.n_folds_skipped_insufficient_train_data}\n"
+        f"aggregate_baseline_mae={result.aggregate_baseline_mae:.4f}  "
+        f"aggregate_challenger_mae={result.aggregate_challenger_mae:.4f}"
+    )
+    for fold in result.folds:
+        typer.echo(
+            f"  fold={fold.fold_index}  train_n={fold.train_n}  val_n={fold.validation_n}  "
+            f"val_window={fold.validation_start_date}..{fold.validation_end_date}  "
+            f"baseline_mae={fold.baseline_report.mae:.4f}  challenger_mae={fold.challenger_report.mae:.4f}"
+        )
+    typer.echo("No automatic promotion -- this is a comparison report only.")
+    typer.echo(f"report written: {report_path}")
+
+
 if __name__ == "__main__":
     app()

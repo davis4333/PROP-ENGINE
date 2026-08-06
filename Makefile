@@ -28,7 +28,7 @@ help:
 
 engine-install:
 	cd $(ENGINE_DIR) && $(UV) venv --python 3.12 .venv --allow-existing
-	$(UV) pip install -e "$(ENGINE_DIR)[dev]" --python $(ENGINE_PY)
+	$(UV) pip install -e "$(ENGINE_DIR)[dev,training]" --python $(ENGINE_PY)
 
 web-install:
 	cd $(WEB_DIR) && pnpm install

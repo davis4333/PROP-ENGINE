@@ -49,7 +49,7 @@ if [ -n "${REPLIT_DEPLOYMENT:-}" ]; then
     fi
     uv pip install --quiet \
       --python "$REPO_ROOT/engine/.venv/bin/python" \
-      -e "$REPO_ROOT/engine[dev]"
+      -e "$REPO_ROOT/engine[dev,training]"
 
     echo "==> [engine] Applying database migrations"
     (cd "$REPO_ROOT/engine" && .venv/bin/python -m alembic upgrade head)
@@ -88,7 +88,7 @@ else
   fi
   uv pip install --quiet \
     --python "$REPO_ROOT/engine/.venv/bin/python" \
-    -e "$REPO_ROOT/engine[dev]"
+    -e "$REPO_ROOT/engine[dev,training]"
 
   echo "==> Applying database migrations"
   (cd "$REPO_ROOT/engine" && .venv/bin/python -m alembic upgrade head)
