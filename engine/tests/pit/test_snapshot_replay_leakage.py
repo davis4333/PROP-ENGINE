@@ -14,13 +14,14 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cassandra.db.models.identity import Game, Team
-from cassandra.db.models.raw import RawFinalBoxScore, RawProbablePitcher
+from cassandra.db.models.raw import RawFinalBoxScore, RawLineup, RawProbablePitcher
 from cassandra.db.models.sources import Source
 from cassandra.features.builders import build_features
 from cassandra.pit.snapshot_builder import build_snapshot
 
 GAME_PK = 999101
 HOME_TEAM_MLB_ID = 110
+AWAY_TEAM_MLB_ID = 111
 SLATE_DATE = datetime(2024, 4, 1).date()
 CUTOFF = datetime(2024, 4, 1, 22, 0, tzinfo=UTC)  # first pitch was 18:00 UTC
 BEFORE = CUTOFF - timedelta(hours=2)
@@ -56,6 +57,54 @@ def _make_game(session, *, game_id: str, mlb_game_pk: int) -> Game:
     session.execute(stmt)
     session.flush()
     return session.get(Game, game_id)
+
+
+def _make_game_two_teams(session, *, game_id: str, mlb_game_pk: int) -> Game:
+    """Like _make_game, but with a real away team too -- needed to
+    exercise opponent-lineup resolution, which requires two distinct
+    teams in the game (_make_game's single-team games always resolve
+    opponent_team_mlb_id to None, since there's no second team to be
+    "the other one")."""
+    _make_team(session, team_id="pit-home-team", mlb_team_id=HOME_TEAM_MLB_ID)
+    _make_team(session, team_id="pit-away-team", mlb_team_id=AWAY_TEAM_MLB_ID)
+    stmt = pg_insert(Game).values(
+        game_id=game_id,
+        mlb_game_pk=mlb_game_pk,
+        game_date=CUTOFF,
+        scheduled_start_utc=CUTOFF - timedelta(hours=4),
+        home_team_id="pit-home-team",
+        away_team_id="pit-away-team",
+        venue_id=None,
+        status="Final",
+    )
+    session.execute(stmt)
+    session.flush()
+    return session.get(Game, game_id)
+
+
+def _lineup(
+    session,
+    *,
+    source_id: str,
+    mlb_game_pk: int,
+    team_mlb_id: int,
+    observed_at: datetime,
+    ingested_at: datetime,
+) -> RawLineup:
+    row = RawLineup(
+        raw_id=uuid.uuid4(),
+        source_id=source_id,
+        mlb_game_pk=mlb_game_pk,
+        team_mlb_id=team_mlb_id,
+        batting_order={"order": [], "slots": {}},
+        is_confirmed=True,
+        observed_at=observed_at,
+        ingested_at=ingested_at,
+        payload={},
+    )
+    session.add(row)
+    session.flush()
+    return row
 
 
 def _probable(
@@ -119,6 +168,61 @@ def test_late_arriving_starter_swap_invisible_to_a_snapshot_frozen_before_it(db_
     assert entry_replayed.probable is not None
     assert entry_replayed.probable.player_mlb_id == 5001, (
         "replaying the same cutoff must never pick up data ingested after it"
+    )
+
+
+def test_late_arriving_lineup_swap_invisible_to_a_snapshot_frozen_before_it(db_session):
+    """The lineup analogue of the starter-swap test above: the opponent's
+    batting order changes (a late scratch/reshuffle) after the original
+    snapshot's cutoff. Rebuilding at the SAME cutoff must still show the
+    original lineup version -- not the swap, no matter how much more
+    "correct" or "current" it is in real time."""
+    _make_source(db_session, "src-lineup-swap")
+    _make_game_two_teams(db_session, game_id="pit-game-lineup-swap", mlb_game_pk=GAME_PK + 3)
+
+    # The home team's pitcher -- opponent_lineup on his entry should
+    # resolve to the AWAY team's lineup (who he actually faces).
+    _probable(
+        db_session,
+        source_id="src-lineup-swap",
+        mlb_game_pk=GAME_PK + 3,
+        player_mlb_id=8001,
+        team_mlb_id=HOME_TEAM_MLB_ID,
+        observed_at=BEFORE,
+        ingested_at=BEFORE,
+    )
+    original_lineup = _lineup(
+        db_session,
+        source_id="src-lineup-swap",
+        mlb_game_pk=GAME_PK + 3,
+        team_mlb_id=AWAY_TEAM_MLB_ID,
+        observed_at=BEFORE,
+        ingested_at=BEFORE,
+    )
+
+    snapshot, entries = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    entry = next(e for e in entries if e.team_mlb_id == HOME_TEAM_MLB_ID)
+    assert entry.opponent_lineup is not None
+    assert entry.opponent_lineup.raw_id == original_lineup.raw_id
+
+    # A late reshuffle/replacement lineup arrives -- physically written
+    # after the original cutoff.
+    _lineup(
+        db_session,
+        source_id="src-lineup-swap",
+        mlb_game_pk=GAME_PK + 3,
+        team_mlb_id=AWAY_TEAM_MLB_ID,
+        observed_at=AFTER,
+        ingested_at=AFTER,
+    )
+
+    # Rebuilding at the SAME cutoff (as a replay/backtest would) must
+    # reproduce the exact same frozen opponent lineup -- never the swap.
+    _, entries_replayed = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    entry_replayed = next(e for e in entries_replayed if e.team_mlb_id == HOME_TEAM_MLB_ID)
+    assert entry_replayed.opponent_lineup is not None
+    assert entry_replayed.opponent_lineup.raw_id == original_lineup.raw_id, (
+        "replaying the same cutoff must never pick up a lineup ingested after it"
     )
 
 

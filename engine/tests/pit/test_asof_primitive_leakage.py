@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cassandra.db.models.raw import (
     RawLine,
+    RawLineup,
     RawParkFactor,
     RawPitcherGameLog,
     RawProbablePitcher,
@@ -143,6 +144,13 @@ def test_latest_as_of_picks_the_most_recent_visible_version_not_the_global_lates
         (RawPitcherGameLog, {"player_mlb_id": 888002}, "strikeouts", 5, 99),
         (RawParkFactor, {"venue_id": "mlb_venue_2", "season": 2024}, "k_factor", 1.0, 5.0),
         (RawWeatherObservation, {"venue_id": "mlb_venue_2"}, "temp_f", 70.0, 999.0),
+        (
+            RawLineup,
+            {"mlb_game_pk": 999003, "team_mlb_id": 110},
+            "batting_order",
+            {"order": [1001], "slots": {"100": 1001}},
+            {"order": [9999], "slots": {"100": 9999}},
+        ),
     ],
 )
 def test_all_as_of_never_returns_a_post_cutoff_row_across_raw_tables(
