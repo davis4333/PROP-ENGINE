@@ -29,6 +29,8 @@ from cassandra.historical.dataset_builder import (
     list_datasets,
     load_manifest,
 )
+from cassandra.historical.evaluation import evaluate_model, write_evaluation_report
+from cassandra.models.baseline import BaselinePoissonModel
 from cassandra.orchestration.run_slate import grade_slate_run, ingest_slate, run_slate
 from cassandra.pit.snapshot_builder import build_snapshot
 
@@ -464,6 +466,46 @@ def export_training_dataset_cmd(
         writer.writeheader()
         writer.writerows(rows)
     typer.echo(f"Exported {len(rows)} rows to {export_path}")
+
+
+@app.command(name="evaluate-baseline")
+def evaluate_baseline_cmd(
+    dataset_id: str = typer.Option(..., "--dataset-id"),
+    output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), "--output-dir"),
+) -> None:
+    """Evaluates the permanent baseline model (`k-model-0.1.0`, unchanged)
+    against a frozen training dataset -- MAE/RMSE/bias/Poisson deviance
+    and threshold calibration (historical/evaluation.py). Writes a
+    HISTORICAL_RECONSTRUCTION-labeled report file; never writes to the
+    live `projections`/`grades` tables (CLAUDE.md non-negotiable #8)."""
+    data_path = Path(output_dir) / f"{dataset_id}.jsonl.gz"
+    if not data_path.exists():
+        typer.echo(f"No dataset file found: {data_path}")
+        raise typer.Exit(code=1)
+
+    rows: list[dict] = []
+    with gzip.open(data_path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json_module.loads(line))
+
+    report = evaluate_model(rows, BaselinePoissonModel(), dataset_id=dataset_id)
+    report_path = write_evaluation_report(report, Path(output_dir) / "evaluations")
+
+    typer.echo(
+        f"evaluation_id={report.evaluation_id} label={report.record_label} "
+        f"model_version={report.model_version} dataset_id={dataset_id}\n"
+        f"n_rows={report.n_rows} skipped={report.n_rows_skipped_missing_label}\n"
+        f"mae={report.mae:.4f} rmse={report.rmse:.4f} mean_bias={report.mean_bias:.4f} "
+        f"mean_poisson_deviance={report.mean_poisson_deviance:.4f}"
+    )
+    for c in report.calibration:
+        typer.echo(
+            f"  line={c.threshold}  n={c.n}  predicted_p_over={c.mean_predicted_prob_over:.3f}  "
+            f"empirical_over_rate={c.empirical_over_rate:.3f}  brier={c.brier_score:.4f}"
+        )
+    for tier, stats in report.breakdown_by_recent_k_rate_tier.items():
+        typer.echo(f"  tier={tier}  n={stats['n']:.0f}  mae={stats['mae']:.4f}")
+    typer.echo(f"report written: {report_path}")
 
 
 if __name__ == "__main__":

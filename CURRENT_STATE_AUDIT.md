@@ -309,11 +309,25 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   features never draw on the target game itself or any later game.
   Verified against real backfill data: `cassandra build-training-dataset
   --seasons 2023` produced 4,860 real rows.
-- **Not yet built**: anything that reads a dataset back to actually
-  evaluate `k-model-0.1.0` or train a challenger -- see
-  `docs/TRAINING_READINESS_REPORT.md` for the explicit "no evaluation
-  exists yet" statement and what's next. Also not yet
-  collected/implemented (reported honestly, not silently omitted --
+- **Baseline evaluation is real and implemented**:
+  `historical/evaluation.py` runs the permanent, unmodified
+  `k-model-0.1.0` against a frozen dataset and computes MAE, RMSE, mean
+  bias, Poisson deviance, and calibration/Brier score at 6 illustrative
+  half-integer thresholds (no real historical lines exist -- calibration
+  compares the model's own predicted P(over) to realized frequency), plus
+  a per-`recent_k_rate_tier` breakdown. CLI: `evaluate-baseline`. Every
+  report is labeled `HISTORICAL_RECONSTRUCTION` and written to its own
+  frozen file, never to `projections`/`grades`. Verified against real
+  2023 backfill data: MAE 1.95 strikeouts, well-calibrated across all 6
+  thresholds tested (see `docs/TRAINING_READINESS_REPORT.md` for the full
+  numbers).
+- **Not yet built**: training a challenger model (Poisson regression,
+  negative-binomial) or walk-forward validation -- this environment has
+  no numpy/scipy/statsmodels installed, and adding one for a half-built
+  feature wasn't done in this pass. See
+  `docs/TRAINING_READINESS_REPORT.md` for the explicit statement of what
+  exists vs. doesn't. Also not yet collected/implemented (reported
+  honestly, not silently omitted --
   every dataset manifest/row records these as unavailable, and
   `audit-historical-coverage` surfaces them too): pitch-level/plate-
   appearance detail, historical weather, park factors computed from

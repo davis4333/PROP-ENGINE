@@ -1,11 +1,11 @@
 # Training Readiness Report
 
-**Status as of this pass: a real, leakage-tested training dataset can now
-be built (`STRICT_LIVE_COMPATIBLE`, reduced feature set). No model has
-been trained or evaluated against it yet.** This is a direct, honest
-statement, not a placeholder — see below for exactly what's done, what's
-blocking evaluation/training specifically, and what a run against real
-2023 backfill data actually produced.
+**Status as of this pass: a real, leakage-tested training dataset can be
+built and the permanent baseline (`k-model-0.1.0`, unchanged) can be
+evaluated against it. No challenger model has been trained yet.** This is
+a direct, honest statement, not a placeholder — see below for exactly
+what's done, what's still blocking challenger training specifically, and
+what a real run against real 2023 backfill data actually produced.
 
 ## What exists
 
@@ -35,17 +35,38 @@ blocking evaluation/training specifically, and what a run against real
   season_average=267, league_default=137` — i.e. the large majority of
   rows have enough real prior-start history for the live pipeline's own
   decay-weighted feature tier, not a fallback.
-- The permanent baseline model (`k-model-0.1.0`, `models/baseline.py`)
-  already exists and runs live — but it has never been evaluated against
-  this or any historical dataset, only against live slates as they occur.
+- The permanent baseline model (`k-model-0.1.0`, `models/baseline.py`,
+  unmodified) can now be evaluated against a frozen dataset
+  (`historical/evaluation.py`; CLI: `evaluate-baseline`) — MAE, RMSE,
+  mean bias, Poisson deviance, and calibration/Brier score at 6
+  illustrative half-integer thresholds (no real historical market lines
+  exist, so "calibration" compares the model's own predicted P(over) to
+  the realized frequency — see the module's docstring), broken out by
+  `recent_k_rate_tier`. Every report is written
+  `HISTORICAL_RECONSTRUCTION`-labeled to its own frozen JSON file, never
+  to `projections`/`grades`. Covered by a hand-checkable unit-test suite
+  (`engine/tests/unit/test_historical_evaluation.py`) with synthetic
+  known-value assertions for every metric.
+  **Real result from this session** (`cassandra evaluate-baseline
+  --dataset-id <2023-season dataset>`, 4,860 real rows): MAE 1.95
+  strikeouts, RMSE 2.47, mean bias -0.10 (slightly under-projects on
+  average), mean Poisson deviance 1.43. Calibration was close across
+  every threshold tested (e.g. line 3.5: predicted P(over)=0.647 vs.
+  empirical 0.672; line 8.5: predicted 0.089 vs. empirical 0.088) — the
+  baseline's probability estimates track realized outcomes reasonably
+  well even on this reduced feature set, though this is one run against
+  partial-season data, not a validated production-readiness claim.
 
-## What's blocking evaluation/training specifically
+## What's blocking challenger training specifically
 
-1. **No evaluation/training code exists yet.** The dataset builder
-   produces frozen feature+label rows; nothing yet loads one, runs
-   `k-model-0.1.0`'s Poisson formula against it, or computes MAE/RMSE/
-   calibration/Brier score. This is the next real engineering task, not
-   done in this pass.
+1. **No challenger-training code exists yet.** Fitting a real Poisson
+   regression or negative-binomial model (vs. the fixed-formula baseline)
+   needs a numerical optimizer; this environment currently has no numpy/
+   scipy/statsmodels installed, and adding a new dependency for a
+   half-built feature wasn't done in this pass rather than rushing it.
+   Walk-forward validation (train on earlier dates, validate on later
+   ones, roll forward) also needs its own harness, separate from the
+   dataset builder itself.
 2. **Several pregame feature domains this backfill was scoped to collect
    aren't collected yet**: park factors calculated from prior games,
    historical weather, opponent rolling strikeout context, pitch-level
@@ -70,33 +91,36 @@ blocking evaluation/training specifically, and what a run against real
 
 ## What happens next (not done in this pass)
 
-1. Build the actual baseline evaluation: load a dataset's JSONL rows, run
-   `k-model-0.1.0` against each row's features, compute MAE, RMSE, mean
-   bias, Poisson deviance, calibration at common half-lines, Brier score
-   — broken out by season/sample-size tier, with and without optional
-   feature groups once available.
-2. Train at least one challenger count model (Poisson regression,
-   negative-binomial, or a gradient-boosted count model) using
-   time-ordered walk-forward validation — train on earlier dates,
-   validate on later dates, roll forward, never train on games after the
-   evaluation game.
-3. Produce a comparison report and recommendation, and a model registry
-   entry. **No automatic promotion** — production promotion requires
-   explicit human approval, per the mission directive.
-4. Once weather/park-factor/opponent-context backfill exists (Phase A
-   items 6-10), rebuild datasets with those groups populated and compare
-   against the reduced-feature-set baseline.
-5. Historical market-line hit rate stays labeled "unavailable" unless
+1. Add a numerical-fitting dependency (numpy/scipy/statsmodels — a real
+   decision, not silently picked) and train at least one challenger count
+   model (Poisson regression, negative-binomial, or a gradient-boosted
+   count model) using time-ordered walk-forward validation — train on
+   earlier dates, validate on later dates, roll forward, never train on
+   games after the evaluation game.
+2. Produce a comparison report (challenger vs. the real baseline numbers
+   above) and recommendation, plus a model registry entry. **No automatic
+   promotion** — production promotion requires explicit human approval,
+   per the mission directive.
+3. Once weather/park-factor/opponent-context backfill exists (Phase A
+   items 6-10), rebuild datasets with those groups populated and re-run
+   `evaluate-baseline` to compare against the reduced-feature-set numbers
+   above.
+4. Historical market-line hit rate stays labeled "unavailable" unless
    genuine historical lines are imported separately (out of scope for
    this phase per the mission directive itself — a count model trains on
    actual strikeout outcomes, not market lines).
 
 ## Explicit statement
 
-No historical model evaluation, backtest, or walk-forward result exists
-anywhere in this repository as of this pass — a training dataset can now
-be built and frozen, but nothing has read one back to evaluate or train a
-model yet. Nothing has been written to the live `projections`/`grades`
-tables by anything other than the live pipeline. This report exists
-specifically so that fact is unambiguous and checkable, not implied by
-silence.
+A real baseline evaluation now exists (`k-model-0.1.0` against a 2023-
+season `STRICT_LIVE_COMPATIBLE` dataset, numbers above) — this is a
+backtest/historical reconstruction, not a walk-forward validation (the
+baseline is a fixed formula, not fit to any data, so there is no
+train/test split to violate). **No challenger model has been trained,
+and no walk-forward validation result exists anywhere in this
+repository as of this pass.** Nothing has been written to the live
+`projections`/`grades` tables by anything other than the live pipeline —
+every evaluation report this module produces is labeled
+`HISTORICAL_RECONSTRUCTION` and written to its own frozen file. This
+report exists specifically so that fact is unambiguous and checkable,
+not implied by silence.
