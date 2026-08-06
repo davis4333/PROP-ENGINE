@@ -387,3 +387,50 @@ vendor API; a retry re-fetches it. Not changed here (out of this fix's
 scope -- the directive asks for durable FAILURE TRACKING, not durable
 partial business data, and the two are structurally distinct in this
 codebase, confirmed by the same audit that found this bug).
+
+### 1C -- fixed
+
+Confirmed real by tracing `orchestration/scheduler.py`'s
+`_run_slate_success_count_today()`: the query filtered only on
+`PipelineRunStage.stage == "PUBLISH"` and `PipelineRunStage.status !=
+"skipped"`, which counts `"running"` (a crashed/interrupted run still
+stuck mid-stage) and, since 1B, `"failed"` as if either were a completed
+success. Before 1B this was unobservable -- a failed run left zero
+`PipelineRunStage` rows at all, so there was nothing for this query to
+miscount -- but now that a failed `run_slate()` genuinely leaves a
+durable `PipelineRunStage(stage="PUBLISH", status="failed")` row (per
+1B), undercounting it as a real success would make the scheduler believe
+that hour's slot was already satisfied, silently suppressing the
+legitimate retry for the rest of the day.
+
+Fix: the query now requires BOTH `PipelineRun.status == "succeeded"` AND
+`PipelineRunStage.status == "succeeded"` (in addition to the existing
+`slate_date`/`stage == "PUBLISH"` filters) -- a run only counts as a real
+success when the run-level status and the PUBLISH-stage status both
+independently agree it completed.
+
+Tests: 4 new integration tests added to the existing
+`test_scheduler_reconciliation.py` (which already ran its 5 tests against
+a real Postgres session, not mocks):
+`test_zero_for_a_failed_publish_stage`,
+`test_zero_for_a_still_running_publish_stage`,
+`test_zero_when_publish_succeeded_but_the_run_itself_is_marked_failed`
+(constructs a deliberately mismatched `PipelineRun.status="failed"` +
+`PipelineRunStage.status="succeeded"` pair, proving the fix checks both
+independently rather than either alone), and
+`test_real_success_still_counted_alongside_a_failed_and_a_running_run`
+(a realistic mixed-state date: one genuine success plus a failed retry
+attempt and a still-in-flight run, proving the fix doesn't overcorrect
+into undercounting real successes). Confirmed via `git stash` that all 4
+new tests fail against the pre-fix query (`1 == 0` and `3 == 1` type
+failures) before restoring the fix.
+
+Verified: 324 tests passing (320 + 4) against a fresh scratch database,
+`alembic upgrade head`/`check` clean, ruff/mypy/guardrails clean.
+
+Remaining limitation: this fix corrects success *detection*, not
+concurrency -- it does not by itself prevent two scheduler processes from
+racing to start the same hour's run_slate() (that's Phase 2C's DB
+advisory-lock item, not yet implemented). `run_slate()`/`grade_slate_run()`
+being independently idempotent (per the module's own docstring) keeps a
+race harmless today, but the advisory lock is still open work.

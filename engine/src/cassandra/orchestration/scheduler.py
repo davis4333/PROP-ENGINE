@@ -104,14 +104,28 @@ def _run_slate_success_count_today(session: Session, today: date) -> int:
     PipelineRun for the same slate_date -- both write a PipelineRun row,
     but only run_slate() ever marks PUBLISH as anything other than
     "skipped" (grade_slate_run() always marks it skipped, detail "Not
-    part of grade_slate_run")."""
+    part of grade_slate_run").
+
+    Requires BOTH `PipelineRun.status == "succeeded"` AND
+    `PipelineRunStage(stage="PUBLISH").status == "succeeded"` -- found and
+    fixed after an audit: the previous query only checked
+    `PipelineRunStage.status != "skipped"`, which counts "running" (a
+    crashed/interrupted run stuck mid-stage) and "failed" as if they were
+    successful completions. That bug was effectively unobservable before
+    orchestration/run_slate.py's own durable-failed-run fix (a failed run
+    used to leave zero trace at all, so there was nothing for this query
+    to miscount) -- now that a failed run genuinely leaves a `status=
+    "failed"` `PipelineRunStage(stage="PUBLISH")` row, undercounting it as
+    a real success would suppress a legitimate retry for that hour slot,
+    silently leaving a slate un-run for the rest of the day."""
     stmt = (
         select(func.count(func.distinct(PipelineRunStage.run_id)))
         .join(PipelineRun, PipelineRun.run_id == PipelineRunStage.run_id)
         .where(
             PipelineRun.slate_date == today,
+            PipelineRun.status == "succeeded",
             PipelineRunStage.stage == "PUBLISH",
-            PipelineRunStage.status != "skipped",
+            PipelineRunStage.status == "succeeded",
         )
     )
     return session.execute(stmt).scalar_one()
