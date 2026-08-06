@@ -70,6 +70,10 @@ class Projection(Base):
     projection_sd: Mapped[float | None] = mapped_column(Numeric)
     probability_over: Mapped[float | None] = mapped_column(Numeric)
     probability_under: Mapped[float | None] = mapped_column(Numeric)
+    # Always 0.0 for a half-integer line (no push possible), a real value
+    # for an integer line, null only when there's no line at all -- see
+    # decision/engine.py's Decision.probability_push docstring.
+    probability_push: Mapped[float | None] = mapped_column(Numeric)
 
     decision: Mapped[str] = mapped_column(String, nullable=False)
     decision_status: Mapped[str] = mapped_column(String, nullable=False)

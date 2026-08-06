@@ -19,6 +19,7 @@ function makeProjection(overrides: Partial<ProjectionOut> = {}): ProjectionOut {
     projection_sd: 2.2,
     probability_over: 0.72,
     probability_under: 0.28,
+    probability_push: 0,
     decision: "OVER",
     decision_status: "QUALIFIED",
     reason_codes: [
@@ -71,6 +72,7 @@ describe("ProjectionsTable", () => {
             line: null,
             probability_over: null,
             probability_under: null,
+            probability_push: null,
             reason_codes: [
               {
                 code: "MARKET_CONTEXT_INCOMPLETE",
@@ -114,6 +116,30 @@ describe("ProjectionsTable", () => {
       <ProjectionsTable projections={[makeProjection()]} emptyMessage="" />,
     );
     expect(screen.queryByText("DEMO")).not.toBeInTheDocument();
+  });
+
+  it("shows push probability for an integer line", () => {
+    render(
+      <ProjectionsTable
+        projections={[
+          makeProjection({
+            line: 5,
+            probability_over: 0.4,
+            probability_under: 0.45,
+            probability_push: 0.15,
+          }),
+        ]}
+        emptyMessage=""
+      />,
+    );
+    expect(screen.getByText(/P\(push\) 15\.0%/)).toBeInTheDocument();
+  });
+
+  it("does not show a push probability for a half-integer line", () => {
+    render(
+      <ProjectionsTable projections={[makeProjection()]} emptyMessage="" />,
+    );
+    expect(screen.queryByText(/P\(push\)/)).not.toBeInTheDocument();
   });
 
   it("badges a non-LIVE record so it can never be mistaken for a real pick", () => {

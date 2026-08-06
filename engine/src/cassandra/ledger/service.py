@@ -119,6 +119,7 @@ def publish_projection(
         projection_sd=decision.projection_sd,
         probability_over=decision.probability_over,
         probability_under=decision.probability_under,
+        probability_push=decision.probability_push,
         decision=decision.decision,
         decision_status=decision.decision_status,
         reason_codes=decision.reason_codes,

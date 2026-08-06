@@ -113,11 +113,73 @@ def test_probabilities_sum_to_one():
     assert result.probability_over + result.probability_under == 1.0
 
 
+def test_half_integer_line_has_zero_push_probability():
+    dist = PoissonStrikeoutDistribution(mean=6.0)
+    result = decide(5.5, dist, [])
+    assert result.probability_push == 0.0
+
+
 def test_line_floor_semantics():
     # A .5 line: P(over 5.5) = P(K >= 6) = 1 - P(K <= 5)
     dist = PoissonStrikeoutDistribution(mean=6.0)
     result = decide(5.5, dist, [])
     assert result.probability_over == 1.0 - dist.cdf(5)
+
+
+# --- integer-line push handling -------------------------------------------
+
+
+def test_integer_line_probabilities_sum_to_one_including_push():
+    dist = PoissonStrikeoutDistribution(mean=6.0)
+    result = decide(5.0, dist, [])
+    total = result.probability_over + result.probability_under + result.probability_push
+    assert abs(total - 1.0) < 1e-12
+
+
+def test_integer_line_push_is_p_of_exact_equality():
+    # Regression: probability_under used to be `1 - probability_over`,
+    # which silently folded P(K == line) into "under" for an integer
+    # line. P(K == 5) must be its own reported value, not absorbed.
+    dist = PoissonStrikeoutDistribution(mean=6.0)
+    result = decide(5.0, dist, [])
+    expected_push = dist.cdf(5) - dist.cdf(4)
+    assert result.probability_push == expected_push
+    assert expected_push > 0  # sanity: this line's push probability is real, not a degenerate zero
+
+
+def test_integer_line_under_excludes_the_push_case():
+    # P(under 5) = P(K < 5) = P(K <= 4) -- NOT P(K <= 5), which would
+    # include the push.
+    dist = PoissonStrikeoutDistribution(mean=6.0)
+    result = decide(5.0, dist, [])
+    assert result.probability_under == dist.cdf(4)
+
+
+def test_integer_line_over_is_unaffected_by_push_handling():
+    # P(over 5) = P(K > 5) = P(K >= 6) -- same formula regardless of
+    # whether the line is an integer or half-integer.
+    dist = PoissonStrikeoutDistribution(mean=6.0)
+    result = decide(5.0, dist, [])
+    assert result.probability_over == 1.0 - dist.cdf(5)
+
+
+def test_integer_line_zero_is_handled_without_a_negative_cdf_call():
+    # An edge case: line=0 means "under" would need P(K < 0), which is
+    # structurally impossible -- must not raise or misbehave.
+    dist = PoissonStrikeoutDistribution(mean=3.0)
+    result = decide(0.0, dist, [], edge_threshold=0.05)
+    assert result.probability_under == 0.0
+    assert result.probability_push == dist.cdf(0)
+    assert result.probability_over == 1.0 - dist.cdf(0)
+
+
+def test_integer_line_fail_finding_still_reports_real_probabilities():
+    dist = PoissonStrikeoutDistribution(mean=6.0)
+    findings = [QualityFinding("DATA_MISSING", "no probable pitcher", "fail")]
+    result = decide(5.0, dist, findings, edge_threshold=0.05)
+    assert result.decision == "NO_PLAY"
+    assert result.decision_status == "REJECTED"
+    assert result.probability_push == dist.cdf(5) - dist.cdf(4)
 
 
 def test_projection_sd_uses_poisson_sd_property():

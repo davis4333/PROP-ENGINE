@@ -184,3 +184,58 @@ Verified: 305 tests passing (301 + 4 new) against a fresh scratch
 database, ruff/mypy/guardrails clean.
 
 Remaining limitation: none identified for this specific issue.
+
+### 1D -- fixed
+
+Confirmed real by tracing `decide()`'s math directly:
+`probability_under = 1.0 - probability_over` is correct for a half-integer
+line (no push possible) but silently folds `P(K == line)` into "under"
+for an integer line. Cross-checked `grading/service.py`'s
+`_grade_result()` -- the POST-GAME grading path already correctly handles
+PUSH (comparing actual strikeouts to the line via `Decimal` equality,
+independent of this bug) for both OVER and UNDER decisions -- so this fix
+is purely about the PRE-GAME probability the model reports, not grading
+correctness, which was already fine.
+
+Fix: `decide()` now branches on `float(line).is_integer()`. Half-integer
+line: `probability_push = 0.0` (unchanged behavior). Integer line:
+`probability_push = cdf(line) - cdf(line - 1)` (P(K == line)),
+`probability_under = cdf(line - 1)` (P(K < line), excluding the push).
+`probability_over` unchanged either way (`1 - cdf(floor(line))`, correct
+in both cases already). Added `Decision.probability_push: float | None`
+(0.0 for half-integer, a real value for integer, `None` only when
+`line is None`, consistent with 1F's null-probability contract) and
+persisted it end-to-end: new `Numeric` column on `projections`
+(migration `d71edca7eb30`), `ledger/service.py` passes it through,
+`ProjectionOut` API schema + assembly, `web/src/lib/types.ts`, and
+`ProjectionsTable.tsx` now shows a `P(push) X%` badge only when the value
+is non-zero (so the common half-integer-line case is unaffected visually).
+
+Scope decision, documented rather than silently skipped: the directive
+also asked for a broader "market-policy layer" distinguishing sportsbook
+lines-with-prices from manually-entered UnderDog-style lines with
+possibly different push/refund behavior. Not built in this pass --
+ADR 0006 already establishes that this system deliberately does NOT model
+any specific vendor's payout/refund rules (Underdog's real payout math is
+explicitly unresolved), and the existing edge/decision layer already only
+ever compares against a neutral 0.5 baseline, never a vendor-specific EV.
+Adding a new abstraction for a payout policy nobody has specified yet
+would be inventing a product decision, which CLAUDE.md's rules explicitly
+prohibit. The concrete, real math bug (push probability miscalculation)
+is what's fixed here; the payout-policy question stays open for Tyler,
+same as it already was for EV in general.
+
+Tests: 7 new unit tests (`test_decision_engine.py`) covering push-
+probability correctness, the three-way probability sum (over + under +
+push == 1.0 for an integer line), the `line=0` edge case (no negative
+`cdf()` call), and a fail-finding row still reporting real (not
+zeroed-out) probabilities. 3 new frontend tests
+(`ProjectionsTable.test.tsx`) for the push badge showing on an integer
+line and staying hidden on a half-integer line.
+
+Verified: 312 backend tests passing (305 + 7) against a fresh scratch
+database, `alembic upgrade head` + `alembic check` clean, ruff/mypy/
+guardrails clean; 26 frontend tests passing, typecheck/lint clean.
+
+Remaining limitation: no vendor-specific payout/refund policy is modeled
+(deliberately, see above) -- Tyler's decision, not guessed at.

@@ -88,6 +88,12 @@ export function ProjectionsTable({
               <td className={styles.probability}>
                 {formatProbability(p.probability_over)} /{" "}
                 {formatProbability(p.probability_under)}
+                {p.probability_push !== null && p.probability_push > 0 && (
+                  <span title="Push probability (integer line)">
+                    {" "}
+                    / P(push) {formatProbability(p.probability_push)}
+                  </span>
+                )}
               </td>
               <td>
                 <ReasonCodes codes={p.reason_codes} />

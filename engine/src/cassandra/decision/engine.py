@@ -8,6 +8,17 @@ an "Underdog-implied probability" (ADR 0006) -- Underdog's real payout
 math is unresolved, and this gate doesn't pretend otherwise.
 `DECISION_EDGE_THRESHOLD` is an explicitly provisional constant (ADR 0005),
 not a calibrated business decision.
+
+Push handling (integer lines): a half-integer line (X.5, the market's
+usual convention) can never push -- `probability_push` is always 0.0.
+A whole-number line CAN push (P(K == line) is a real outcome), so
+`probability_under` is computed as P(K < line), never `1 -
+probability_over` (which would silently fold the push probability into
+"under"). No sportsbook-specific push/refund payout policy is modeled
+here -- this gate only ever reports probabilities and a neutral-baseline
+edge, per ADR 0006's same reasoning; how a specific vendor's payout
+actually treats a push (full refund, void, etc.) is a real product
+question left unresolved and undecided here, not guessed at.
 """
 
 from __future__ import annotations
@@ -58,6 +69,15 @@ class Decision:
     edge: float
     reason_codes: list[str] = field(default_factory=list)
     decision_policy_version: str = DECISION_POLICY_VERSION
+    # Always 0.0 for a half-integer line (no push is possible), a real
+    # value for an integer line, None only when there's no line at all
+    # (see decide()'s line=None branch). Found and fixed after an audit:
+    # this build's own market data can carry integer lines (a manually
+    # entered UnderDog-style line isn't guaranteed to always be X.5), and
+    # probability_under used to be computed as `1 - probability_over`,
+    # which silently folds P(K == line) into "under" instead of reporting
+    # it separately.
+    probability_push: float | None = None
 
 
 def decide(
@@ -95,17 +115,31 @@ def decide(
             decision_status="REJECTED",
             probability_over=None,
             probability_under=None,
+            probability_push=None,
             projection_mean=distribution.mean,
             projection_sd=sd,
             edge=0.0,
             reason_codes=reason_codes,
         )
 
-    # P(strikeouts > line). Lines are conventionally X.5, so floor(line)
-    # is the largest whole strikeout count still counted as "under."
+    # P(strikeouts > line) -- correct for both a half-integer line (X.5,
+    # no push possible) and an integer line (a whole-number line, where
+    # P(K == line) is a real push probability, not part of either side).
+    # floor(line) is the largest whole strikeout count NOT counted as
+    # "over" either way.
     threshold_k = math.floor(line)
     probability_over = 1.0 - distribution.cdf(threshold_k)
-    probability_under = 1.0 - probability_over
+    if float(line).is_integer():
+        # P(K == line): the push case. P(K < line) = P(K <= line - 1) is
+        # the true "under" probability, excluding the push -- NOT
+        # `1 - probability_over`, which would silently fold the push
+        # probability into "under."
+        line_int = int(line)
+        probability_push = distribution.cdf(line_int) - distribution.cdf(line_int - 1)
+        probability_under = distribution.cdf(line_int - 1)
+    else:
+        probability_push = 0.0
+        probability_under = 1.0 - probability_over
 
     if fail_findings:
         return Decision(
@@ -113,6 +147,7 @@ def decide(
             decision_status="REJECTED",
             probability_over=probability_over,
             probability_under=probability_under,
+            probability_push=probability_push,
             projection_mean=distribution.mean,
             projection_sd=sd,
             edge=0.0,
@@ -143,6 +178,7 @@ def decide(
         decision_status=decision_status,
         probability_over=probability_over,
         probability_under=probability_under,
+        probability_push=probability_push,
         projection_mean=distribution.mean,
         projection_sd=sd,
         edge=edge,

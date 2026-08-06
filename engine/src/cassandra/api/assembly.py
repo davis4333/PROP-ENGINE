@@ -76,6 +76,9 @@ def assemble_projection_out(session: Session, projection: Projection, grade: Gra
         probability_under=(
             float(projection.probability_under) if projection.probability_under is not None else None
         ),
+        probability_push=(
+            float(projection.probability_push) if projection.probability_push is not None else None
+        ),
         decision=projection.decision,
         decision_status=projection.decision_status,
         reason_codes=[ReasonCodeOut.from_code(c) for c in projection.reason_codes],

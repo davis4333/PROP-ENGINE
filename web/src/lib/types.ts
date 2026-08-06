@@ -27,6 +27,7 @@ export interface ProjectionOut {
   projection_sd: number | null;
   probability_over: number | null;
   probability_under: number | null;
+  probability_push: number | null;
   decision: "OVER" | "UNDER" | "NO_PLAY";
   decision_status: "QUALIFIED" | "UNCERTAIN" | "HELD" | "REJECTED";
   reason_codes: ReasonCodeOut[];

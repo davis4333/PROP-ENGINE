@@ -44,6 +44,7 @@ class ProjectionOut(BaseModel):
     projection_sd: float | None
     probability_over: float | None
     probability_under: float | None
+    probability_push: float | None
     decision: str
     decision_status: str
     reason_codes: list[ReasonCodeOut]
