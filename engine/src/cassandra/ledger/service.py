@@ -6,15 +6,17 @@ derived by query (`current_projections_for_slate` /
 Publication is a distinct concept from being evaluated or qualified
 (ADR 0002): every call here writes a row (the full transparency record),
 but only `publish=True` calls set `published_at`. A projection published
-after its game's scheduled start is labeled `is_late_publication=True`
-(ADR 0008) and must be excluded from official public performance
-aggregates by readers, not by hiding the row.
+inside the official pregame freeze window --
+`settings.publication_freeze_minutes_before_first_pitch` before the
+game's scheduled start, a provisional/configurable default (ADR 0008) --
+is labeled `is_late_publication=True` and must be excluded from official
+public performance aggregates by readers, not by hiding the row.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, case, select
 from sqlalchemy.orm import Session
@@ -82,7 +84,17 @@ def publish_projection(
     )
 
     published_at = datetime.now(UTC) if publish else None
-    is_late = bool(published_at and game.scheduled_start_utc and published_at > game.scheduled_start_utc)
+    # ADR 0008's official publication cutoff: not the literal first-pitch
+    # moment, but settings.publication_freeze_minutes_before_first_pitch
+    # (a provisional, configurable default) before it -- a publication
+    # landing inside that freeze window is still logged in full, just
+    # never counted as the official pregame pick.
+    official_cutoff = (
+        game.scheduled_start_utc - timedelta(minutes=settings.publication_freeze_minutes_before_first_pitch)
+        if game.scheduled_start_utc
+        else None
+    )
+    is_late = bool(published_at and official_cutoff and published_at > official_cutoff)
 
     row = Projection(
         projection_id=f"proj_{uuid.uuid4().hex[:20]}",

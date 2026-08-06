@@ -177,6 +177,19 @@ against real (not mocked) data during this build.
   transparency principle). This was a real, not hypothetical, gap: it's
   exactly what running the scheduler more than once a day (see below)
   would have made concretely worse rather than better if left unfixed.
+- **Official publication freeze cutoff**: `is_late_publication` is now
+  computed against `settings.publication_freeze_minutes_before_first_
+  pitch` (default 15, configurable via `PUBLICATION_FREEZE_MINUTES_
+  BEFORE_FIRST_PITCH`) minutes before the game's scheduled start, not the
+  literal first-pitch moment — a publication landing inside that window
+  is marked late even though it's genuinely still pregame, so an
+  operator has a stable pick before the window closes rather than one
+  that could keep changing up to the last minute. Same "provisional,
+  configurable, not silently final" status as `decision_edge_threshold`
+  (ADR 0008 updated; still explicitly not Tyler's confirmed operational
+  number). Dedicated tests cover the new boundary (a publication inside
+  the window but before first pitch is late; just outside it is
+  official).
 - Honest, append-only grading (`grading/service.py`): WIN/LOSS/PUSH/VOID/
   NO_PLAY, only grades published projections against `Final` box scores
   (ADR 0007), idempotent (a correction — a later Final box score for the

@@ -312,3 +312,62 @@ def test_publish_false_does_not_set_published_at(db_session):
 
 def test_latest_version_none_for_unknown_logical_key(db_session):
     assert latest_version(db_session, "nope|nope|pitcher_strikeouts") is None
+
+
+def test_publication_inside_the_freeze_window_is_late_even_though_before_first_pitch(db_session):
+    # ADR 0008's freeze window (settings.publication_freeze_minutes_
+    # before_first_pitch, default 15) is stricter than "before literal
+    # first pitch" -- a publication landing inside that window must still
+    # be marked late, since the whole point is a stable pick an operator
+    # can act on before the window closes, not one that could still
+    # change up to the last minute.
+    snapshot = _make_snapshot(db_session)
+    game_start = NOW + timedelta(minutes=30)
+    game = _make_game(db_session, game_id="test-game-freeze-window", scheduled_start_utc=game_start)
+    _make_player(db_session, player_id="test-player-freeze-window")
+    decision = decide(5.5, PoissonStrikeoutDistribution(mean=8.0), [])
+
+    with time_machine.travel(game_start - timedelta(minutes=10)):
+        row = publish_projection(
+            db_session,
+            run_id="run-freeze-window",
+            snapshot=snapshot,
+            game=game,
+            player_id="test-player-freeze-window",
+            line=5.5,
+            feature_set_version="k-features-0.1.0",
+            features={},
+            model_version="k-model-0.1.0",
+            decision=decision,
+            as_of=game_start - timedelta(minutes=10),
+        )
+    db_session.flush()
+
+    assert row.published_at < game_start  # genuinely before first pitch...
+    assert row.is_late_publication is True  # ...but still inside the freeze window
+
+
+def test_publication_just_before_the_freeze_window_is_official(db_session):
+    snapshot = _make_snapshot(db_session)
+    game_start = NOW + timedelta(minutes=30)
+    game = _make_game(db_session, game_id="test-game-before-freeze-window", scheduled_start_utc=game_start)
+    _make_player(db_session, player_id="test-player-before-freeze-window")
+    decision = decide(5.5, PoissonStrikeoutDistribution(mean=8.0), [])
+
+    with time_machine.travel(game_start - timedelta(minutes=16)):
+        row = publish_projection(
+            db_session,
+            run_id="run-before-freeze-window",
+            snapshot=snapshot,
+            game=game,
+            player_id="test-player-before-freeze-window",
+            line=5.5,
+            feature_set_version="k-features-0.1.0",
+            features={},
+            model_version="k-model-0.1.0",
+            decision=decision,
+            as_of=game_start - timedelta(minutes=16),
+        )
+    db_session.flush()
+
+    assert row.is_late_publication is False

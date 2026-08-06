@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     # ADR 0005 -- provisional, not a calibrated or business-approved value.
     decision_edge_threshold: float = 0.05
 
+    # ADR 0008 -- how close to a game's scheduled first pitch a
+    # publication must land to still count as "official" (excluded from
+    # official aggregates/is_late_publication=True once inside this
+    # window). 15 is the mission directive's own suggested working
+    # default, not a calibrated or Tyler-confirmed operational number --
+    # same "provisional, configurable, not silently final" status as
+    # decision_edge_threshold above; ADR 0008 explicitly leaves the real
+    # number open pending Tyler's input.
+    publication_freeze_minutes_before_first_pitch: int = 15
+
     # ADR 0011 -- demo-only auth, not production-ready.
     admin_shared_secret: str = "change-me-dev-only"
 
