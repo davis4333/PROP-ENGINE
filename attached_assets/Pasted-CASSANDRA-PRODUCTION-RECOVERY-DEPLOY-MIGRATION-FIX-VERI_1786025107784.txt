@@ -1,0 +1,94 @@
+CASSANDRA — PRODUCTION RECOVERY: DEPLOY MIGRATION FIX & VERIFY
+
+CONTEXT
+The production VM at cassandrahits.replit.app has been down. The FastAPI
+engine was crashing on startup with:
+  relation "backfill_runs" already exists
+during `alembic upgrade head` — a prior deploy attempt got partway
+through migration f52bee65c091 (created some tables) before failing,
+without alembic_version advancing, so every retry re-ran the same
+CREATE TABLE statements and crashed again. Next.js's proxy was returning
+ECONNREFUSED on every /api/* route as a result.
+
+The fix is already committed and pushed to GitHub: branch
+claude/repo-reset-jexzz6, commit c795e7c ("Fix production-down migration
+crash: make f52bee65c091 idempotent"). It makes that one migration file
+idempotent (checks table/column/index existence before creating each
+one) so it converges cleanly from the exact broken state instead of
+crashing. Verified locally against a reproduction of the broken state
+before being pushed.
+
+DO THIS NOW, IN ORDER
+
+1. BACK UP THE PRODUCTION DATABASE FIRST. In the Replit shell:
+   pg_dump "$DATABASE_URL" > backup_before_migration_fix_$(date +%Y%m%d_%H%M%S).sql
+   Confirm the resulting file is non-empty (`ls -la` it). Do not proceed
+   if the backup command fails or produces an empty file — stop and
+   report the error instead.
+
+2. Pull the latest code onto the Replit workspace from branch
+   claude/repo-reset-jexzz6 (fetch + reset/pull to the tip, commit
+   c795e7c or later — check `git log -1` to confirm the commit message
+   mentions "idempotent" after pulling).
+
+3. Confirm `git status --porcelain` is clean after the pull (no stray
+   uncommitted local edits left in the Replit workspace — if there are
+   any, do not discard them silently; report exactly what they are
+   before doing anything else).
+
+4. Check the current Alembic revision in the production database before
+   migrating:
+   cd engine && .venv/bin/python -m alembic current
+   (or the repo's equivalent activated environment/command — use
+   whatever this project's startup script normally uses to run
+   migrations). Report what it prints.
+
+5. Run the migration:
+   .venv/bin/python -m alembic upgrade head
+   This should now complete without the "already exists" error. If it
+   still errors, STOP and report the exact full error text — do not
+   attempt to manually drop/alter tables or hand-edit alembic_version to
+   work around it.
+
+6. Confirm the new revision:
+   .venv/bin/python -m alembic current
+   It should now show f52bee65c091 (head).
+
+7. Fully restart/redeploy the PRODUCTION VM process (not just the dev
+   preview) so the engine actually reloads with the new code — hit
+   Publish / redeploy through Replit's deployment UI, not just a
+   workspace file sync. Confirm from the deploy logs that you see the
+   engine's normal healthy startup sequence (something like "Applying
+   database migrations ✓", "Starting the engine API on
+   127.0.0.1:8000", "Application startup complete", "Uvicorn running").
+
+8. VERIFY, against the real public production URL
+   (https://cassandrahits.replit.app), not the dev preview:
+   curl -s -o /dev/null -w "%{http_code}\n" https://cassandrahits.replit.app/
+   curl -s -o /dev/null -w "%{http_code}\n" https://cassandrahits.replit.app/api/today
+   curl -s -o /dev/null -w "%{http_code}\n" -H "X-Admin-Secret: test" https://cassandrahits.replit.app/api/admin/status
+   All three must return 200, not 500 and not ECONNREFUSED/502.
+
+9. Fetch and report the actual JSON body of
+   GET https://cassandrahits.replit.app/api/admin/status
+   (with header X-Admin-Secret: test) so blocking_issues and source
+   health can be reviewed. Do not print or log the admin secret value
+   itself anywhere in your report — only use it in the request header.
+
+REPORT BACK EXACTLY
+
+- The commit SHA now running in production (`git rev-parse HEAD` on the
+  deployed workspace).
+- The Alembic revision now active in the production database.
+- The backup file name/size from step 1.
+- HTTP status codes from step 8 for all three URLs.
+- The full JSON body from step 9.
+- Whether the deploy logs showed any errors, warnings, or anything
+  unexpected during startup — paste the actual log lines, don't
+  paraphrase them.
+- If anything in steps 1–9 failed or behaved unexpectedly, stop and
+  report the exact error rather than trying alternate workarounds.
+
+Do not modify any other code, migrations, or configuration as part of
+this task — this is strictly a deploy-and-verify pass for the one
+already-committed fix.
