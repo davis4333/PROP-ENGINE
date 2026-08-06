@@ -1,14 +1,16 @@
 # Training Readiness Report
 
-**Status as of this pass: a full walk-forward comparison exists.** A
-real, leakage-tested training dataset can be built; the permanent
-baseline (`k-model-0.1.0`, unchanged) and a Poisson-regression challenger
-can both be evaluated against it under time-ordered walk-forward
-validation. **The challenger beat the baseline on every fold of a real
-run against 2023-2024 backfill data** (numbers below) — the first
-challenger-vs-baseline result this project has ever produced. This is a
-direct, honest statement, not a placeholder — see below for exactly
-what's done, what's still not built, and the caveats on that result.
+**Status as of this pass: the 2023-present backfill has completed (0
+failures), and a full walk-forward comparison exists across all three
+complete regular seasons.** A real, leakage-tested training dataset can
+be built; the permanent baseline (`k-model-0.1.0`, unchanged) and a
+Poisson-regression challenger can both be evaluated against it under
+time-ordered walk-forward validation. **The challenger beat the baseline
+on every one of 7 folds spanning 2023-2025** (numbers below) — the
+strongest and most complete challenger-vs-baseline result this project
+has produced. This is a direct, honest statement, not a placeholder —
+see below for exactly what's done, what's still not built, and the
+caveats on that result.
 
 ## What exists
 
@@ -16,8 +18,12 @@ what's done, what's still not built, and the caveats on that result.
   actually collecting real 2023-present MLB schedule/game, actual-starter,
   pitcher-outcome, and lineup data — see `HISTORICAL_COVERAGE_REPORT.md`
   / `audit-historical-coverage` for the current point-in-time coverage.
-  2023/2024 (regular season) essentially complete; 2025 mostly covered;
-  2026 not yet reached by this backfill pass.
+  **2023-2025 regular seasons are complete** (0 failed games across the
+  whole 2023-01-01-to-present range); 2026 is complete through the
+  season's current point-in-time (in progress, real games still being
+  played). A small number of games remain `skipped` (not yet `Final` --
+  postponed/rescheduled or genuinely in-progress at the time of the
+  last check), never silently treated as failures.
 - An implemented availability policy (`historical/availability.py`,
   `HISTORICAL_AVAILABILITY_POLICY.md`) — `eligible_prior_starts()`
   returns a pitcher's own prior Final starts strictly before the target
@@ -61,27 +67,35 @@ what's done, what's still not built, and the caveats on that result.
   rows. The core leakage guarantee (every fold's training rows are
   strictly earlier than its validation rows) has its own dedicated test
   (`engine/tests/unit/test_walk_forward.py`).
-- **Real result from this session** (`cassandra build-training-dataset
-  --seasons 2023,2024` → 9,718 rows → `cassandra
-  train-walk-forward-challenger --dataset-id ... --n-folds 6`, 5 folds
-  actually run, 1 skipped for insufficient early-season training data):
-  the challenger beat the baseline on **every fold**:
+- **Real result from this session, full 2023-2025 backfill**
+  (`cassandra build-training-dataset --seasons 2023,2024,2025` →
+  14,578 rows → `cassandra train-walk-forward-challenger --dataset-id
+  ... --n-folds 8`, 7 folds actually run, 1 skipped for insufficient
+  early-season training data): the challenger beat the baseline on
+  **every one of the 7 folds**:
 
   | fold | validation window | baseline MAE | challenger MAE |
   |------|--------------------|---------------|-----------------|
-  | 1 | 2023-05-29 .. 2023-08-02 | 1.9435 | 1.8959 |
-  | 2 | 2023-08-02 .. 2023-10-01 | 1.9362 | 1.8949 |
-  | 3 | 2023-10-01 .. 2024-05-28 | 1.8971 | 1.8349 |
-  | 4 | 2024-05-28 .. 2024-07-31 | 1.9536 | 1.9067 |
-  | 5 | 2024-07-31 .. 2024-09-30 | 1.9251 | 1.8626 |
+  | 1 | 2023-06-06 .. 2023-08-18 | 1.9601 | 1.8942 |
+  | 2 | 2023-08-18 .. 2024-04-20 | 1.9267 | 1.8821 |
+  | 3 | 2024-04-20 .. 2024-06-27 | 1.9260 | 1.8917 |
+  | 4 | 2024-06-27 .. 2024-09-07 | 1.9463 | 1.8887 |
+  | 5 | 2024-09-07 .. 2025-05-11 | 1.9188 | 1.8481 |
+  | 6 | 2025-05-12 .. 2025-07-22 | 1.8583 | 1.8165 |
+  | 7 | 2025-07-22 .. 2025-09-28 | 1.8854 | 1.8426 |
 
-  Aggregate (row-weighted) MAE: baseline 1.9311, challenger 1.8790 — a
-  consistent ~2.7% improvement, not a fluke on one lucky fold.
-  Also verified separately: `evaluate-baseline` against a 2023-only
-  dataset (4,860 rows) gave MAE 1.95, RMSE 2.47, mean bias -0.10, and
+  Aggregate (row-weighted) MAE: baseline 1.9173, challenger 1.8663 — a
+  consistent ~2.7% improvement across three full seasons and 14,578 real
+  starts, not a fluke on one lucky fold or one partial dataset.
+  `evaluate-baseline` against the same full dataset gave MAE 1.9223,
+  RMSE 2.4254, mean bias -0.1102, mean Poisson deviance 1.3713, and
   calibration close to empirical at every threshold tested (e.g. line
-  3.5: predicted P(over)=0.647 vs. empirical 0.672; line 8.5: predicted
-  0.089 vs. empirical 0.088).
+  3.5: predicted P(over)=0.646 vs. empirical 0.676; line 8.5: predicted
+  0.084 vs. empirical 0.081).
+  (An earlier, smaller run against just 2023-2024's partial backfill —
+  9,718 rows, 5 folds — showed the same ~2.7% gap, aggregate MAE 1.9311
+  vs. 1.8790; kept here only as a note that the result replicated as
+  more data came in, not as a separate finding.)
 
 ## Caveats on that result (read before treating it as a promotion case)
 
@@ -92,12 +106,14 @@ what's done, what's still not built, and the caveats on that result.
    models are equally blind to the missing groups), but neither number
    represents what either model could do with the full feature set the
    product spec calls for.
-2. **One dataset, one fold count, one challenger family.** This is a
-   single walk-forward run, not a robustness study across different
-   `--n-folds` values, feature-engineering choices, or a
-   negative-binomial alternative. The ~2.7% MAE improvement is real but
-   modest, and a real promotion decision should see this replicated, not
-   taken on one run.
+2. **One fold count, one challenger family.** The ~2.7% MAE improvement
+   replicated once as the dataset grew from 9,718 to 14,578 rows (same
+   result, same direction, same rough magnitude), which is more than a
+   single-run coincidence, but it's still one `--n-folds` choice and one
+   model family (Poisson regression) -- not a robustness study across
+   different fold counts, feature-engineering choices, or a
+   negative-binomial alternative. Real but modest, and a real promotion
+   decision should see more than this.
 3. **No statistical-significance test.** The report gives per-fold and
    aggregate MAE, not a paired significance test (e.g. a paired
    bootstrap) on whether the gap is distinguishable from noise at this

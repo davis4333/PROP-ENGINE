@@ -358,12 +358,14 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   per fold, and evaluates both models against that fold's held-out rows
   -- the strictly-earlier-training-than-validation guarantee has its own
   dedicated test. CLI: `train-walk-forward-challenger`. **Verified
-  against real 2023-2024 backfill data (9,718 rows, 5 folds run): the
-  challenger beat the baseline on every fold** -- aggregate MAE 1.879
-  (challenger) vs. 1.931 (baseline), a consistent ~2.7% improvement. See
-  `docs/TRAINING_READINESS_REPORT.md` for the full per-fold numbers and
-  explicit caveats (reduced feature set, one run, no significance test,
-  no promotion mechanism exists). **No automatic promotion anywhere** --
+  against the complete 2023-2025 backfill (14,578 rows, 7 folds run): the
+  challenger beat the baseline on every fold** -- aggregate MAE 1.866
+  (challenger) vs. 1.917 (baseline), a consistent ~2.7% improvement that
+  replicated as the dataset grew from an earlier 9,718-row partial run.
+  See `docs/TRAINING_READINESS_REPORT.md` for the full per-fold numbers
+  and explicit caveats (reduced feature set, one fold count, no
+  significance test, no promotion mechanism exists). **No automatic
+  promotion anywhere** --
   every report is `HISTORICAL_RECONSTRUCTION`-labeled and written to its
   own frozen file; nothing in this repository ever writes a challenger's
   predictions to `projections`/`grades`.
@@ -380,15 +382,17 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   (so pitcher handedness isn't available), and the
   `RETROSPECTIVE_ENRICHED` tier (nothing enriched exists yet to build it
   from).
-- Backfill run status at the point this batch of work was committed:
-  see the session's final report / `docs/HISTORICAL_COVERAGE_REPORT.md`
-  for the exact numbers -- a full 2023-present backfill (~11,100 games
-  discovered) takes on the order of an hour or more against the free,
-  unmetered MLB Stats API and was still in progress (2023/2024
-  essentially complete, 2025 mostly covered, 2026 not yet reached as of
-  the last check in this session) when this session's context ended; it
-  is resumable, so `cassandra backfill-mlb --resume` with the same date
-  range continues it exactly where it left off.
+- **Backfill run status: complete.** The 2023-01-01-to-present backfill
+  (`backfill_run_id=backfill_8aae900893d7`) finished with `status=
+  completed`, 0 failed games across its entire run, and a small number
+  of legitimate `skipped` games (not yet `Final` -- postponed/
+  rescheduled or in-progress at the time of the last check). 2023-2025
+  regular seasons are fully covered; 2026 is covered through its current
+  point-in-time (the season is still being played). See
+  `docs/HISTORICAL_COVERAGE_REPORT.md`/`cassandra audit-historical-
+  coverage` for exact per-season counts. Still resumable going forward
+  (`cassandra backfill-mlb --resume` with the same date range) to pick up
+  new games as each day's slate reaches Final.
 
 ### Fixture demo slate
 
