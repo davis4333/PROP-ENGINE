@@ -46,7 +46,7 @@ def test_admin_status_surfaces_source_health_and_failed_run_as_blocking(client, 
     db_session.add(
         SourceHealth(
             source_id="src-admin-test",
-            last_status="unavailable",
+            last_status="FAILED",
             last_failure_at=datetime.now(UTC),
             consecutive_failures=5,
         )
@@ -76,12 +76,17 @@ def test_umpire_stub_never_appears_as_a_blocking_issue(client, db_session):
     # CURRENT_STATE_AUDIT.md's Provisional section). Regression for a
     # real bug found live: it showed up under "Blocking Issues" forever
     # since nothing could ever bring its consecutive-failure count down.
+    # last_status="DISABLED" (not the generic "unavailable"/"FAILED") is
+    # exactly what UmpireStubAdapter's unavailable_reason="disabled" now
+    # produces via ingest_service.py's _source_health_status() -- see
+    # NEVER_BLOCKING_STATES in api/routers/admin.py, which is keyed on
+    # this state, not the source's name.
     stmt = pg_insert(Source).values(source_id="umpire_stub", name="umpire_stub", kind="umpire")
     db_session.execute(stmt)
     db_session.add(
         SourceHealth(
             source_id="umpire_stub",
-            last_status="unavailable",
+            last_status="DISABLED",
             last_failure_at=datetime.now(UTC),
             consecutive_failures=999,
         )

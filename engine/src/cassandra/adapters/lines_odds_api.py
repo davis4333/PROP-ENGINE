@@ -62,7 +62,7 @@ from typing import Any
 
 import httpx
 
-from cassandra.adapters.base import AdapterFetchResult, RawRecord, SourceAdapter
+from cassandra.adapters.base import AdapterFetchResult, RawRecord, SourceAdapter, UnavailableReason
 from cassandra.db.models.raw import RawLine
 
 logger = logging.getLogger(__name__)
@@ -126,6 +126,7 @@ class LinesOddsApiAdapter(SourceAdapter):
                 fetched_at=fetched_at,
                 is_available=False,
                 warnings=[*warnings, f"Could not fetch MLB events: {_safe_fetch_error(exc)}"],
+                unavailable_reason="quota_limited" if _is_quota_exceeded(exc) else None,
             )
         _check_quota(events_resp, warnings)
 
@@ -138,6 +139,8 @@ class LinesOddsApiAdapter(SourceAdapter):
             window_end = window_start + timedelta(days=3)
         records: list[RawRecord] = []
         matched_names: set[str] = set()
+        had_odds_fetch_error = False
+        quota_exceeded = False
 
         for event in events:
             event_id = event.get("id")
@@ -166,6 +169,9 @@ class LinesOddsApiAdapter(SourceAdapter):
                 detail = odds_resp.json()
             except (httpx.HTTPError, ValueError) as exc:
                 warnings.append(f"Could not fetch odds for event {event_id}: {_safe_fetch_error(exc)}")
+                had_odds_fetch_error = True
+                if _is_quota_exceeded(exc):
+                    quota_exceeded = True
                 continue
             _check_quota(odds_resp, warnings)
 
@@ -178,11 +184,23 @@ class LinesOddsApiAdapter(SourceAdapter):
             warnings.append(f"No {MARKET} prop found for: {', '.join(unmatched)}")
 
         if not records:
+            reason: UnavailableReason | None
+            if quota_exceeded:
+                reason = "quota_limited"
+            elif not had_odds_fetch_error:
+                # Every event fetch that was attempted succeeded; there
+                # just wasn't a posted pitcher_strikeouts prop for any
+                # confirmed starter yet -- expected well before first
+                # pitch, not a real failure.
+                reason = "pending"
+            else:
+                reason = None
             return AdapterFetchResult(
                 records=[],
                 fetched_at=fetched_at,
                 is_available=False,
                 warnings=warnings or [f"No {MARKET} props found for any confirmed starter"],
+                unavailable_reason=reason,
             )
         return AdapterFetchResult(records=records, fetched_at=fetched_at, warnings=warnings)
 
@@ -255,6 +273,14 @@ def _ordered_bookmakers(bookmakers: list[dict[str, Any]]) -> list[dict[str, Any]
     preferred = [b for b in bookmakers if b.get("key") == PREFERRED_BOOKMAKER]
     rest = [b for b in bookmakers if b.get("key") != PREFERRED_BOOKMAKER]
     return preferred + rest
+
+
+def _is_quota_exceeded(exc: Exception) -> bool:
+    """True specifically for a 429 -- distinct from a generic upstream
+    error since the fix (wait for quota reset, or upgrade the vendor
+    plan) is different from "something is broken," per
+    db/models/sources.py's QUOTA_LIMITED source-health state."""
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
 
 
 def _safe_fetch_error(exc: Exception) -> str:

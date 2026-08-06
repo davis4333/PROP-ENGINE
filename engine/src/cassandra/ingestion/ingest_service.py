@@ -96,7 +96,9 @@ def ingest(
             for record in result.records:
                 resolve_identity_from_probable_pitcher_payload(session, record.payload)
 
-    _update_source_health(session, source_id, now, success=result.is_available)
+    _update_source_health(
+        session, source_id, now, success=result.is_available, unavailable_reason=result.unavailable_reason
+    )
     session.add(
         AuditEvent(
             event_type="INGEST",
@@ -120,20 +122,55 @@ def ingest(
     )
 
 
-def _update_source_health(session: Session, source_id: str, now: datetime, *, success: bool) -> None:
+# Mirrors api/routers/admin.py's CONSECUTIVE_FAILURE_ALERT_THRESHOLD --
+# a real ("error"-reason or unspecified) failure only escalates from
+# DEGRADED to FAILED once it's failed this many times in a row, matching
+# the same threshold the blocking-issues check uses. Duplicated as a
+# literal rather than imported to avoid ingestion/ importing api/ (the
+# dependency should run the other way -- admin reads ingestion's output).
+_DEGRADED_TO_FAILED_THRESHOLD = 3
+
+
+def _source_health_status(*, success: bool, unavailable_reason: str | None, consecutive_failures: int) -> str:
+    if success:
+        return "HEALTHY"
+    if unavailable_reason == "disabled":
+        return "DISABLED"
+    if unavailable_reason == "pending":
+        return "PENDING"
+    if unavailable_reason == "quota_limited":
+        return "QUOTA_LIMITED"
+    # "error" or unspecified -- a real failure, escalating from DEGRADED
+    # (transient, still worth a closer look before alarming) to FAILED
+    # once it's persisted.
+    return "FAILED" if consecutive_failures >= _DEGRADED_TO_FAILED_THRESHOLD else "DEGRADED"
+
+
+def _update_source_health(
+    session: Session,
+    source_id: str,
+    now: datetime,
+    *,
+    success: bool,
+    unavailable_reason: str | None = None,
+) -> None:
     existing = session.get(SourceHealth, source_id)
     if existing is None:
+        consecutive_failures = 0 if success else 1
         session.add(
             SourceHealth(
                 source_id=source_id,
                 last_success_at=now if success else None,
                 last_failure_at=None if success else now,
-                last_status="ok" if success else "unavailable",
-                consecutive_failures=0 if success else 1,
+                last_status=_source_health_status(
+                    success=success,
+                    unavailable_reason=unavailable_reason,
+                    consecutive_failures=consecutive_failures,
+                ),
+                consecutive_failures=consecutive_failures,
             )
         )
         return
-    existing.last_status = "ok" if success else "unavailable"
     existing.updated_at = now
     if success:
         existing.last_success_at = now
@@ -141,3 +178,8 @@ def _update_source_health(session: Session, source_id: str, now: datetime, *, su
     else:
         existing.last_failure_at = now
         existing.consecutive_failures = existing.consecutive_failures + 1
+    existing.last_status = _source_health_status(
+        success=success,
+        unavailable_reason=unavailable_reason,
+        consecutive_failures=existing.consecutive_failures,
+    )

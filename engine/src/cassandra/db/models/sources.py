@@ -14,6 +14,31 @@ from cassandra.db.base import Base
 
 SOURCE_KINDS = ("schedule", "pitcher_stats", "weather", "park", "umpire", "lines")
 
+# SourceHealth.last_status vocabulary. `last_status` stays a free-text
+# String column (no CHECK constraint) rather than gaining a migration --
+# these are the only values ingestion/ingest_service.py's
+# _update_source_health() actually writes.
+#   HEALTHY         -- last fetch succeeded.
+#   PENDING         -- expected, temporary absence (e.g. a box score
+#                       before the game is Final, a prop market that
+#                       hasn't posted yet) -- never a blocking issue.
+#   DEGRADED        -- a real fetch error (HTTP 5xx, timeout, etc.), but
+#                       still within the first few consecutive failures --
+#                       worth watching, not yet worth alarming on.
+#   FAILED          -- a real fetch error that has now failed
+#                       CONSECUTIVE_FAILURE_ALERT_THRESHOLD+ times in a
+#                       row (api/routers/admin.py) -- this is what
+#                       actually surfaces as a blocking issue.
+#   DISABLED        -- permanently unavailable by design (e.g.
+#                       umpire_stub -- no reliable free source exists at
+#                       all) -- never a blocking issue, and never
+#                       expected to recover on its own.
+#   QUOTA_LIMITED   -- a real vendor rate/quota limit (HTTP 429)
+#                       specifically, distinct from a generic upstream
+#                       error since the fix (wait for quota, or upgrade
+#                       plan) is different from "something is broken."
+SOURCE_HEALTH_STATES = ("HEALTHY", "PENDING", "DEGRADED", "FAILED", "DISABLED", "QUOTA_LIMITED")
+
 
 class Source(Base):
     __tablename__ = "sources"

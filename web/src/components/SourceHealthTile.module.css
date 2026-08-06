@@ -29,11 +29,27 @@
   margin-right: 0.4rem;
 }
 
-.ok .dot {
+.healthy .dot {
   background: #34d399;
 }
 
-.unavailable .dot {
+.pending .dot {
+  background: #60a5fa;
+}
+
+.degraded .dot {
+  background: #fbbf24;
+}
+
+.quotaLimited .dot {
+  background: #fb923c;
+}
+
+.disabled .dot {
+  background: #71717a;
+}
+
+.failed .dot {
   background: #f87171;
 }
 
@@ -43,4 +59,11 @@
 
 .failures {
   color: #fca5a5;
+}
+
+.detail {
+  margin-top: 0.35rem;
+  font-size: 0.6875rem;
+  color: #a1a1aa;
+  line-height: 1.35;
 }

@@ -41,7 +41,7 @@ def test_ingest_park_factors_end_to_end(db_session):
 
     health = db_session.get(SourceHealth, adapter.source_name)
     assert health is not None
-    assert health.last_status == "ok"
+    assert health.last_status == "HEALTHY"
     assert health.consecutive_failures == 0
 
     events = (
@@ -69,7 +69,10 @@ def test_ingest_unavailable_source_still_writes_audit_and_health(db_session):
 
     health = db_session.get(SourceHealth, adapter.source_name)
     assert health is not None
-    assert health.last_status == "unavailable"
+    # UmpireStubAdapter sets unavailable_reason="disabled" -- a permanent,
+    # by-design stub, distinct from a real fetch failure (see
+    # db/models/sources.py's SOURCE_HEALTH_STATES).
+    assert health.last_status == "DISABLED"
     assert health.consecutive_failures == 1
 
     events = (

@@ -27,6 +27,19 @@ from cassandra.db.base import Base
 
 AdapterKind = Literal["schedule", "pitcher_stats", "weather", "park", "umpire", "lines"]
 
+# Why an adapter reported is_available=False, for source-health semantics
+# (api/routers/admin.py, db/models/sources.py's SourceHealth.last_status).
+# Optional and additive: an adapter that doesn't set this still behaves
+# exactly as before (ingest_service.py maps a bare is_available=False
+# with no reason to the generic "FAILED" state). Adapters set this only
+# where they can genuinely distinguish "expected, not-yet-available" from
+# "something is actually broken" -- see e.g. adapters/umpire_stub.py
+# (always "disabled"), adapters/final_box_scores_mlb.py ("pending" when
+# no games in the requested batch are Final yet), adapters/lines_odds_api.py
+# ("pending" when no confirmed starter has a posted prop yet, "quota_limited"
+# on a 429 specifically).
+UnavailableReason = Literal["pending", "error", "quota_limited", "disabled"]
+
 
 @dataclass(frozen=True)
 class RawRecord:
@@ -42,6 +55,7 @@ class AdapterFetchResult:
     fetched_at: datetime
     is_available: bool = True
     warnings: list[str] = field(default_factory=list)
+    unavailable_reason: UnavailableReason | None = None
 
 
 class SourceAdapter(ABC):

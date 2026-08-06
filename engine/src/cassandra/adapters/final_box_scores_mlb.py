@@ -55,6 +55,8 @@ class FinalBoxScoresMLBAdapter(SourceAdapter):
 
         records: list[RawRecord] = []
         warnings: list[str] = []
+        had_fetch_error = False
+        any_game_final = False
         for game_pk in mlb_game_pks:
             try:
                 response = self._client.get(f"{LIVE_FEED_BASE}/game/{game_pk}/feed/live")
@@ -62,9 +64,12 @@ class FinalBoxScoresMLBAdapter(SourceAdapter):
                 payload = response.json()
             except (httpx.HTTPError, ValueError) as exc:
                 warnings.append(f"Live feed fetch failed for game {game_pk}: {exc}")
+                had_fetch_error = True
                 continue
 
             game_status = payload.get("gameData", {}).get("status", {}).get("abstractGameState", "Unknown")
+            if game_status == "Final":
+                any_game_final = True
             teams = payload.get("liveData", {}).get("boxscore", {}).get("teams", {})
             found_pitcher = False
             for side in ("home", "away"):
@@ -95,10 +100,19 @@ class FinalBoxScoresMLBAdapter(SourceAdapter):
                 )
 
         if not records:
+            # No box score data is expected, not broken, when it's simply
+            # that none of the requested games have reached Final yet
+            # (the normal state for a fresh/current slate queried before
+            # first pitch, or mid-game) -- distinct from a real fetch
+            # failure, which always sets unavailable_reason=None (falls
+            # through to the generic DEGRADED/FAILED escalation in
+            # ingest_service.py's _source_health_status()).
+            pending = not had_fetch_error and not any_game_final
             return AdapterFetchResult(
                 records=[],
                 fetched_at=fetched_at,
                 is_available=False,
                 warnings=warnings or ["No box score records found"],
+                unavailable_reason="pending" if pending else None,
             )
         return AdapterFetchResult(records=records, fetched_at=fetched_at, warnings=warnings)

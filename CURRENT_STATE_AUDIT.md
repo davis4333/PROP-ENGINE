@@ -194,6 +194,24 @@ against real (not mocked) data during this build.
   (+`/{projection_id}` history), `GET /api/admin/status`, `POST
   /api/admin/runs/{slate_date}/{run,grade}` — the admin routes gated by
   ADR 0011's shared-secret header.
+- **Source-health semantics**: `SourceHealth.last_status` is now a real
+  vocabulary (`HEALTHY`/`PENDING`/`DEGRADED`/`FAILED`/`DISABLED`/
+  `QUOTA_LIMITED` — `db/models/sources.py`'s `SOURCE_HEALTH_STATES`),
+  not a bare ok/unavailable flag. `AdapterFetchResult.unavailable_reason`
+  lets an adapter say *why* it has no data — `umpire_stub` always reports
+  `disabled` (permanent by design); `final_box_scores_mlb` reports
+  `pending` when a game genuinely hasn't reached Final yet (not a
+  fetch error); `lines_odds_api` reports `pending` when no confirmed
+  starter has a posted prop yet, and `quota_limited` specifically on a
+  429. Admin's blocking-issues check (`NEVER_BLOCKING_STATES`) is now
+  keyed on this state, not a hardcoded per-adapter-name allowlist — a
+  real bug class this closes: any future permanently-stub or
+  legitimately-pending source gets the correct non-blocking treatment
+  automatically, without needing another special case added to
+  `admin.py`. Adapters that don't set a reason keep the old generic
+  behavior (escalates from `DEGRADED` to `FAILED` after 3 consecutive
+  failures). The frontend's `SourceHealthTile` shows a plain-English
+  detail + implied recommended action per state.
 - Typer CLI (`cassandra` console script): `ingest`, `snapshot`,
   `run-slate`, `grade`.
 - Live-verified against the real MLB Stats API (not fixtures) for a

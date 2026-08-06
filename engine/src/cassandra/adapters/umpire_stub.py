@@ -29,4 +29,5 @@ class UmpireStubAdapter(SourceAdapter):
                 "No reliable free umpire-assignment source is available; "
                 "this adapter is a permanent stub until a real source is confirmed."
             ],
+            unavailable_reason="disabled",
         )
