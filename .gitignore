@@ -39,3 +39,8 @@ engine/data/lines_drops/*
 # Local backups and uploaded assets (Replit-only, not for version control)
 backup_*.sql
 attached_assets/
+
+# Frozen training-dataset artifacts (historical/dataset_builder.py) --
+# regeneratable from historical_pitcher_starts + a dataset_id, not source
+# and not something to version in git (see TRAINING_DATASET_SPEC.md).
+engine/data/training_datasets/

@@ -6,14 +6,16 @@ features/registry.py for what each field means.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-from cassandra.db.models.raw import RawPitcherGameLog, RawWeatherObservation
+from cassandra.db.models.raw import RawWeatherObservation
 from cassandra.features.expected_bf import (
     DECAY_HALF_LIFE_STARTS,
     MIN_STARTS_FOR_RECENT,
+    GameLogLike,
     compute_expected_bf,
 )
 from cassandra.features.registry import FEATURE_SET_VERSION
@@ -35,7 +37,7 @@ class KRateResult:
     starts_used: int
 
 
-def compute_recent_k_rate(game_logs_latest_first: list[RawPitcherGameLog]) -> KRateResult:
+def compute_recent_k_rate(game_logs_latest_first: Sequence[GameLogLike]) -> KRateResult:
     valid: list[tuple[int, int]] = [
         (g.batters_faced, g.strikeouts)
         for g in game_logs_latest_first
@@ -68,7 +70,7 @@ def compute_weather_adjustment(weather: RawWeatherObservation | None) -> float:
     return NEUTRAL_WEATHER_ADJUSTMENT
 
 
-def compute_rest_days(game_logs_latest_first: list[RawPitcherGameLog], cutoff_at: datetime) -> int | None:
+def compute_rest_days(game_logs_latest_first: Sequence[GameLogLike], cutoff_at: datetime) -> int | None:
     if not game_logs_latest_first:
         return None
     most_recent = game_logs_latest_first[0]

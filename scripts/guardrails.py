@@ -101,6 +101,17 @@ ASOF_ALLOWED_DIRS = (
     "api",
     "db/migrations",
     "db/models",
+    # historical/ is a structurally separate subsystem (CLAUDE.md
+    # non-negotiable #8, db/models/historical.py's module docstring) that
+    # never reads raw_* tables and is never gated by pit/asof.py's
+    # ingested_at-based cutoff by design -- its own real-world-timeline
+    # availability policy (historical/availability.py) is the correct
+    # leakage gate for this data instead. Exempted here rather than
+    # relying on files in this package to avoid ever mentioning a Raw*
+    # class name in a comment (e.g. explaining what a live equivalent
+    # does), which would otherwise trip this heuristic as a false
+    # positive.
+    "historical",
 )
 
 SECRET_PATTERNS = [

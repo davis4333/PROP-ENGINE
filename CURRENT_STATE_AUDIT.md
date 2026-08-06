@@ -292,20 +292,41 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   rows), full pitcher-outcome normalization, and starting lineups
   (labeled `HISTORICAL_ACTUAL`, since there's no trustworthy pregame-
   availability timestamp for them in the free API).
-- **Not yet collected/implemented in this pass** (reported honestly, not
-  silently omitted -- also surfaced by `audit-historical-coverage`
-  itself): pitch-level/plate-appearance detail, historical weather,
-  park factors computed from prior completed games, rest/workload
-  derived features, opponent rolling strikeout context, the
-  `STRICT_LIVE_COMPATIBLE`/`RETROSPECTIVE_ENRICHED` training-dataset
-  builder, and any model training/walk-forward evaluation. See
-  `docs/TRAINING_READINESS_REPORT.md` for the explicit "not ready to
-  train" statement and what's blocking it.
+- **Training-dataset builder (`STRICT_LIVE_COMPATIBLE` tier) is real and
+  implemented**: `historical/availability.py`'s `eligible_prior_starts()`
+  (a pitcher's own prior Final starts, strictly before the target game's
+  date -- the actual leakage gate) feeds `historical/dataset_builder.py`,
+  which reuses `features/expected_bf.py`/`features/builders.py`'s exact
+  decay-weighted computation functions (via a small duck-typed adapter,
+  not a reimplementation -- made possible by widening those functions'
+  parameter type to a structural `GameLogLike` protocol). CLI:
+  `build-training-dataset`, `dataset-status`, `audit-training-dataset`,
+  `export-training-dataset`. Output is a frozen, versioned gzipped-JSONL
+  + JSON-manifest pair per build under `engine/data/training_datasets/`
+  (gitignored -- regeneratable research artifact, not a new Postgres
+  table). Covered by a dedicated leakage test suite
+  (`engine/tests/integration/test_dataset_builder.py`) proving a row's
+  features never draw on the target game itself or any later game.
+  Verified against real backfill data: `cassandra build-training-dataset
+  --seasons 2023` produced 4,860 real rows.
+- **Not yet built**: anything that reads a dataset back to actually
+  evaluate `k-model-0.1.0` or train a challenger -- see
+  `docs/TRAINING_READINESS_REPORT.md` for the explicit "no evaluation
+  exists yet" statement and what's next. Also not yet
+  collected/implemented (reported honestly, not silently omitted --
+  every dataset manifest/row records these as unavailable, and
+  `audit-historical-coverage` surfaces them too): pitch-level/plate-
+  appearance detail, historical weather, park factors computed from
+  prior completed games, opponent rolling strikeout context, player
+  identity resolution for backfilled pitchers (so pitcher handedness
+  isn't available), and the `RETROSPECTIVE_ENRICHED` tier (nothing
+  enriched exists yet to build it from).
 - Backfill run status at the point this batch of work was committed:
   see the session's final report / `docs/HISTORICAL_COVERAGE_REPORT.md`
   for the exact numbers -- a full 2023-present backfill (~11,100 games
   discovered) takes on the order of an hour or more against the free,
-  unmetered MLB Stats API and was still in progress when this session's
+  unmetered MLB Stats API and was still in progress (2023 essentially
+  complete, 2024 partial, 2025/2026 not yet reached) when this session's
   context ended; it is resumable, so `cassandra backfill-mlb --resume`
   with the same date range continues it exactly where it left off.
 

@@ -27,9 +27,36 @@ surfaced in the feature blob, never a silent gap.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Protocol, runtime_checkable
 
-from cassandra.db.models.raw import RawPitcherGameLog
+
+@runtime_checkable
+class GameLogLike(Protocol):
+    """Structural contract this module (and `features/builders.py`'s
+    decay-weighted helpers) actually needs from a "prior start" record --
+    satisfied by `RawPitcherGameLog` (the live pipeline's input) and by
+    `historical/dataset_builder.py`'s `_PriorStartShim` (the historical
+    training-dataset builder's input), so both callers can reuse this
+    exact computation logic instead of maintaining their own copies.
+
+    Declared as read-only properties, not plain attributes: a Protocol's
+    plain attributes are invariant (implying both get *and* set access),
+    which would reject an implementer whose field type is narrower than
+    this Protocol's (e.g. `_PriorStartShim.stat_date: date` vs. this
+    Protocol's `date | datetime`) even though every real use here only
+    ever reads these fields.
+    """
+
+    @property
+    def batters_faced(self) -> int | None: ...
+    @property
+    def strikeouts(self) -> int | None: ...
+    @property
+    def stat_date(self) -> date | datetime: ...
+
 
 EXPECTED_BF_VERSION = "expected-bf-0.1.0"
 
@@ -48,7 +75,7 @@ class ExpectedBFResult:
     version: str = EXPECTED_BF_VERSION
 
 
-def compute_expected_bf(game_logs_latest_first: list[RawPitcherGameLog]) -> ExpectedBFResult:
+def compute_expected_bf(game_logs_latest_first: Sequence[GameLogLike]) -> ExpectedBFResult:
     valid_bf: list[int] = [g.batters_faced for g in game_logs_latest_first if g.batters_faced is not None]
 
     if len(valid_bf) >= MIN_STARTS_FOR_RECENT:

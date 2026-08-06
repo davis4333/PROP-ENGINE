@@ -1,13 +1,17 @@
 # Historical Availability Policy
 
-**Status: designed, not yet implemented as code.** This document
-specifies the policy the training-dataset builder (`build-training-
-dataset`, not yet built — see `TRAINING_DATASET_SPEC.md` and
-`TRAINING_READINESS_REPORT.md`) must apply once it exists. Written now,
-ahead of that code, so the rules are settled and reviewable before
-anything is built against them — and so this backfill's own data
-collection (which *is* built) is honest about what it does and doesn't
-yet let you do.
+**Status: implemented for `STRICT_LIVE_COMPATIBLE`, rules 1-2 and 6-7
+below** (`historical/availability.py`'s `eligible_prior_starts()`,
+consumed by `historical/dataset_builder.py` — see `TRAINING_DATASET_SPEC.md`
+and `TRAINING_READINESS_REPORT.md`). Rules 3-5 (lineup/weather/umpire
+exclusion) are enforced by omission, not by code that would otherwise
+include them — this backfill pass doesn't collect that data at all yet,
+so there is nothing for the builder to accidentally include. Every
+dataset manifest and row records `park_factor_available`,
+`weather_available`, `lineup_available`, `umpire_available` (currently
+always `False`) so this is checkable, not assumed.
+`RETROSPECTIVE_ENRICHED` remains unimplemented (nothing enriched exists
+yet to build it from).
 
 ## The problem this solves
 

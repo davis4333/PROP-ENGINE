@@ -7,7 +7,10 @@ exception.
 
 from __future__ import annotations
 
+import csv
+import gzip
 import json as json_module
+from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -20,6 +23,12 @@ from cassandra.db.models.historical import BackfillRun
 from cassandra.db.session import session_scope
 from cassandra.historical.backfill import BackfillConfig, retry_failed_items, run_backfill
 from cassandra.historical.coverage import coverage_report, format_coverage_report
+from cassandra.historical.dataset_builder import (
+    DEFAULT_OUTPUT_DIR,
+    build_training_dataset,
+    list_datasets,
+    load_manifest,
+)
 from cassandra.orchestration.run_slate import grade_slate_run, ingest_slate, run_slate
 from cassandra.pit.snapshot_builder import build_snapshot
 
@@ -366,6 +375,95 @@ def audit_historical_coverage_cmd(
         return
 
     typer.echo(format_coverage_report(report))
+
+
+@app.command(name="build-training-dataset")
+def build_training_dataset_cmd(
+    seasons: str = typer.Option(..., "--seasons", help="Comma-separated season years, e.g. '2023,2024'."),
+    game_types: str = typer.Option("R", "--game-types", help="Comma-separated MLB gameType codes."),
+    output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), "--output-dir"),
+) -> None:
+    """Builds and freezes a STRICT_LIVE_COMPATIBLE training dataset from
+    the historical backfill (docs/TRAINING_DATASET_SPEC.md). Writes a
+    gzipped JSONL data file plus a JSON manifest under --output-dir; never
+    overwrites a prior build (each run gets a new dataset_id)."""
+    season_list = [int(s.strip()) for s in seasons.split(",") if s.strip()]
+    type_list = tuple(t.strip() for t in game_types.split(",") if t.strip())
+    with session_scope() as session:
+        manifest = build_training_dataset(
+            session, seasons=season_list, output_dir=Path(output_dir), game_types=type_list
+        )
+    typer.echo(
+        f"dataset_id={manifest.dataset_id} tier={manifest.tier} rows={manifest.row_count} "
+        f"seasons={manifest.seasons} game_types={manifest.game_types}\n"
+        f"data: {manifest.output_path}\n"
+        f"excluded feature groups: {', '.join(manifest.excluded_feature_groups)}"
+    )
+
+
+@app.command(name="dataset-status")
+def dataset_status_cmd(
+    output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), "--output-dir"),
+    json_summary: bool = typer.Option(False, "--json"),
+) -> None:
+    """Lists every training dataset built so far (from its manifest, not
+    a DB table -- see dataset_builder.py's module docstring)."""
+    manifests = list_datasets(Path(output_dir))
+    if json_summary:
+        typer.echo(json_module.dumps([asdict(m) for m in manifests], indent=2))
+        return
+    if not manifests:
+        typer.echo(f"No training datasets found under {output_dir}")
+        return
+    for m in manifests:
+        typer.echo(
+            f"{m.dataset_id}  built={m.built_at}  tier={m.tier}  rows={m.row_count}  "
+            f"seasons={m.seasons}  game_types={m.game_types}"
+        )
+
+
+@app.command(name="audit-training-dataset")
+def audit_training_dataset_cmd(
+    dataset_id: str = typer.Option(..., "--dataset-id"),
+    output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), "--output-dir"),
+) -> None:
+    """Prints the full manifest for one dataset -- versioning, coverage
+    notes, and the explicit list of feature groups it excludes -- so a
+    dataset's limitations are checkable before it's used to evaluate or
+    train a model."""
+    manifest = load_manifest(Path(output_dir), dataset_id)
+    typer.echo(json_module.dumps(asdict(manifest), indent=2))
+
+
+@app.command(name="export-training-dataset")
+def export_training_dataset_cmd(
+    dataset_id: str = typer.Option(..., "--dataset-id"),
+    output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), "--output-dir"),
+    export_path: str = typer.Option(..., "--export-path", help="Destination .csv path."),
+) -> None:
+    """Decompresses one dataset's JSONL rows to a flat CSV for handing to
+    non-Python tooling. The frozen .jsonl.gz remains the source of
+    truth -- this is a read-only convenience export, never regenerated
+    data."""
+    data_path = Path(output_dir) / f"{dataset_id}.jsonl.gz"
+    if not data_path.exists():
+        typer.echo(f"No dataset file found: {data_path}")
+        raise typer.Exit(code=1)
+
+    rows: list[dict] = []
+    with gzip.open(data_path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json_module.loads(line))
+    if not rows:
+        typer.echo("Dataset has zero rows -- nothing to export.")
+        raise typer.Exit(code=1)
+
+    fieldnames = list(rows[0].keys())
+    with open(export_path, "w", newline="", encoding="utf-8") as out_fh:
+        writer = csv.DictWriter(out_fh, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    typer.echo(f"Exported {len(rows)} rows to {export_path}")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,18 @@
 # Strikeout Training Dataset — Spec
 
-**Status: specification only. The builder (`cassandra build-training-
-dataset`) is not implemented.** This document exists so the target shape
-is settled before that code is written — see `TRAINING_READINESS_REPORT.md`
-for exactly what's blocking it and `HISTORICAL_AVAILABILITY_POLICY.md`
-for the eligibility rules the builder must apply.
+**Status: implemented for the `STRICT_LIVE_COMPATIBLE` tier, with the
+reduced feature set noted below** (`cassandra build-training-dataset` /
+`dataset-status` / `audit-training-dataset` / `export-training-dataset`;
+`engine/src/cassandra/historical/dataset_builder.py` +
+`historical/availability.py`). `RETROSPECTIVE_ENRICHED` remains
+unimplemented (nothing to enrich with yet — see "Not yet available"
+below). See `TRAINING_READINESS_REPORT.md` for what building a dataset
+does and does not unblock (a built dataset is not yet a model
+evaluation), and `HISTORICAL_AVAILABILITY_POLICY.md`'s intent for the
+eligibility rule the builder implements
+(`availability.eligible_prior_starts`: a pitcher's own prior Final starts,
+strictly before the target game's date — verified by a dedicated leakage
+test suite, `engine/tests/integration/test_dataset_builder.py`).
 
 ## Unit of a row
 
@@ -39,15 +47,21 @@ factor, weather/historical-forecast features, lineup features (only in
 `RETROSPECTIVE_ENRICHED`, per the availability policy), uncertainty/
 fallback-tier indicators.
 
-**Currently available from this backfill**: batters faced (actual, for
-past starts used as history — not the target game), recent/season K-rate
-history (once the schedule/outcome data this pass collects is available
-across enough prior starts), rest days (derivable from `game_date`
-gaps), pitcher/opponent/venue identity. **Not yet available**: pitch-mix,
-velocity, CSW rate (needs pitch-level data, Phase A item 6, not
-collected), park factor (needs Phase A item 8, not implemented), weather
-(needs Phase A item 7, not implemented), opponent rolling strikeout
-context (needs Phase A item 10, not implemented).
+**Currently emitted by the builder** (each row): `expected_bf` (+ tier,
+starts-used), `recent_k_rate` (+ tier, starts-used), `rest_days`,
+`prior_starts_available`, pitcher/team/opponent identity, `game_type`,
+`season` — all computed only from that pitcher's own earlier Final starts
+(`availability.eligible_prior_starts`), reusing
+`features/expected_bf.py`/`features/builders.py`'s exact pure functions
+via a small duck-typed adapter (`dataset_builder._PriorStartShim`), not a
+reimplementation. **Not yet available** (see every manifest's
+`excluded_feature_groups`, always populated, never silently omitted):
+pitch-mix, velocity, CSW rate (needs pitch-level data, Phase A item 6,
+not collected), park factor (Phase A item 8, not implemented), weather
+(Phase A item 7, not implemented), opponent rolling strikeout context
+(Phase A item 10, not implemented), lineup features, umpire,
+pitcher handedness (identity resolution for historical players hasn't
+run in this pass — see `CURRENT_STATE_AUDIT.md`).
 
 ### Target
 
@@ -64,10 +78,15 @@ recreating an older game.
 
 ## Freezing and versioning
 
-Once built, a training dataset run must be immutable and versioned (same
-spirit as the live projection ledger, though this is research data, not
-a `raw_*`/`projections` table) — a `dataset_version` string identifying
-exactly which backfill data, feature code, and availability-policy
-version produced it, so a later model comparison can be attributed to a
-specific, reproducible dataset rather than "whatever was in the database
-at the time."
+Each build writes a gzipped JSONL data file plus a JSON manifest under
+`engine/data/training_datasets/` (gitignored — a regeneratable research
+artifact, not source; see `dataset_builder.py`'s module docstring for why
+this is a file pair rather than a new Postgres table), keyed by a fresh
+`dataset_id` per build — nothing in the codebase ever reopens an existing
+dataset file for writing, which is what gives it its practical
+immutability. The manifest records `dataset_version` (builder version +
+availability-policy version), `feature_set_version`,
+`expected_bf_version`, `seasons`, `game_types`, `row_count`, and
+`excluded_feature_groups`, so a later model comparison can be attributed
+to a specific, reproducible dataset rather than "whatever was in the
+database at the time."
