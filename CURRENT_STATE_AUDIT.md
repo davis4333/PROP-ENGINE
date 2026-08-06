@@ -279,6 +279,34 @@ against real (not mocked) data during this build.
   vs-late-publication precedence fix (below) — without it, a run that
   happened to land after a game's first pitch could have silently
   become that game's displayed "current" pick.
+- **Live lineup ingestion adapter is real and implemented**:
+  `adapters/lineups_mlb.py`'s `LineupMLBAdapter` (new `"lineup"` source
+  kind, migration `d31a32076841`) fetches MLB's live-feed endpoint per
+  game and writes one `raw_lineups` row per team once that team's
+  batting order is posted (MLB typically posts 1-3 hours before first
+  pitch; an unposted lineup is `unavailable_reason="pending"`, not a
+  failure, same pattern as `final_box_scores_mlb.py`). Wired into
+  `orchestration/run_slate.py`'s `ingest_slate()`. `pit/snapshot_
+  builder.py` now resolves the OPPONENT's lineup (not the pitcher's own
+  team's -- who a starting pitcher actually faces) via the same
+  `latest_as_of()` two-condition cutoff gate every other raw table read
+  uses, writes a `snapshot_raw_refs` entry when found, and surfaces
+  `ingestion/quality_gate.py`'s new `check_lineup_confirmed()` finding
+  (`LINEUP_UNCONFIRMED`, `warn` severity) -- wiring the reason code that
+  had existed in the vocabulary since Phase 1 but was never backed by a
+  real source. **Deliberately NOT added to `decision/engine.py`'s
+  `QUALITY_RISK_CODES`**: MLB commonly hasn't posted a lineup at typical
+  scheduler run times, so including it there would downgrade nearly
+  every early-day evaluation to UNCERTAIN regardless of real edge -- a
+  sweeping, unreviewed behavior change to how often anything shows
+  QUALIFIED. The finding is still recorded and visible in every
+  projection's `reason_codes` (transparency preserved), just not gating
+  `decision_status` yet; whether/when it should is a real product
+  decision for Tyler, documented as open rather than guessed at. Real,
+  point-in-time-correct end-to-end test coverage: a dedicated adapter
+  test suite, `check_lineup_confirmed` unit tests, and an integration
+  test proving `build_snapshot()` resolves the correct opponent (not
+  same-team) lineup using the real 2023-06-15 fixture slate.
 - Admin's "Blocking Issues" panel (`api/routers/admin.py`) excludes
   `umpire_stub` (a permanent stand-in, always unavailable by design —
   see Provisional below) from ever being flagged as blocking; found live

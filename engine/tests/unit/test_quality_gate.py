@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from cassandra.db.models.raw import RawLine, RawProbablePitcher
+from cassandra.db.models.raw import RawLine, RawLineup, RawProbablePitcher
 from cassandra.ingestion.quality_gate import (
     check_data_stale,
     check_line_available,
     check_line_conflict,
+    check_lineup_confirmed,
     check_starter_confirmed,
 )
 
@@ -47,6 +48,25 @@ def test_starter_confirmed_clean_is_none():
         mlb_game_pk=1, player_mlb_id=1, is_confirmed=True, observed_at=NOW, payload={}
     )
     assert check_starter_confirmed(probable) is None
+
+
+def test_lineup_confirmed_missing_is_warn():
+    finding = check_lineup_confirmed(None)
+    assert finding is not None
+    assert finding.reason_code == "LINEUP_UNCONFIRMED"
+    assert finding.status == "warn"
+
+
+def test_lineup_confirmed_present_is_none():
+    lineup = RawLineup(
+        mlb_game_pk=1,
+        team_mlb_id=110,
+        batting_order={"order": [1, 2, 3], "slots": {}},
+        is_confirmed=True,
+        observed_at=NOW,
+        payload={},
+    )
+    assert check_lineup_confirmed(lineup) is None
 
 
 def test_line_available_empty_is_fail():

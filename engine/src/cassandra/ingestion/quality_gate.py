@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from cassandra.db.models.raw import RawLine, RawProbablePitcher
+from cassandra.db.models.raw import RawLine, RawLineup, RawProbablePitcher
 
 STALE_THRESHOLD = timedelta(hours=20)
 LINE_CONFLICT_WINDOW = timedelta(minutes=30)
@@ -37,6 +37,23 @@ def check_starter_confirmed(probable: RawProbablePitcher | None) -> QualityFindi
             "STARTER_UNCONFIRMED",
             f"Probable starter (player_mlb_id={probable.player_mlb_id}) "
             "is not confirmed as of the snapshot cutoff.",
+            "warn",
+        )
+    return None
+
+
+def check_lineup_confirmed(opponent_lineup: RawLineup | None) -> QualityFinding | None:
+    """Checks the OPPONENT's batting lineup -- not the pitcher's own
+    team's -- since it's who a starting pitcher actually faces that would
+    matter for a strikeout projection. `warn`, not `fail`: MLB commonly
+    hasn't posted a lineup yet at typical pregame cutoff times (lineups
+    usually land 1-3 hours before first pitch), so this is often expected
+    absence, not a data problem -- matching STARTER_UNCONFIRMED's own
+    warn-not-fail severity for the same reason."""
+    if opponent_lineup is None:
+        return QualityFinding(
+            "LINEUP_UNCONFIRMED",
+            "The opponent's batting lineup was not confirmed as of the snapshot cutoff.",
             "warn",
         )
     return None

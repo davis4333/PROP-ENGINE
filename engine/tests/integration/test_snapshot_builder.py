@@ -21,6 +21,7 @@ import httpx
 import respx
 
 from cassandra.adapters.lines_manual import LinesManualAdapter
+from cassandra.adapters.lineups_mlb import LIVE_FEED_BASE, LineupMLBAdapter
 from cassandra.adapters.park_factors_static import ParkFactorsStaticAdapter
 from cassandra.adapters.pitcher_game_logs_mlb import PitcherGameLogsMLBAdapter
 from cassandra.adapters.probable_pitchers_mlb import ProbablePitchersMLBAdapter
@@ -32,6 +33,33 @@ from cassandra.pit.snapshot_builder import build_snapshot
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "mlb_api"
 SLATE_DATE = date(2023, 6, 15)
 KIKUCHI_ID = 579328
+KIKUCHI_GAME_PK = 717753
+ORIOLES_TEAM_MLB_ID = 110  # home side of game 717753 -- who Kikuchi (Blue Jays) actually faces
+
+
+def _lineup_feed_payload() -> dict:
+    orioles_order = [640605, 641820, 592885, 592696, 664702, 543829, 606192, 656976, 519083]
+    return {
+        "gamePk": KIKUCHI_GAME_PK,
+        "gameData": {"teams": {"home": {"id": ORIOLES_TEAM_MLB_ID}, "away": {"id": 141}}},
+        "liveData": {
+            "boxscore": {
+                "teams": {
+                    "home": {
+                        "battingOrder": orioles_order,
+                        "players": {
+                            f"ID{pid}": {"person": {"id": pid}, "battingOrder": str(100 + i * 100)}
+                            for i, pid in enumerate(orioles_order)
+                        },
+                    },
+                    # Away (Blue Jays) lineup deliberately not posted yet
+                    # -- irrelevant to Kikuchi's own entry, which only
+                    # cares about the OPPONENT's (home/Orioles) lineup.
+                    "away": {"battingOrder": [], "players": {}},
+                }
+            }
+        },
+    }
 
 
 def _load(name: str) -> dict:
@@ -47,6 +75,9 @@ def _ingest_full_slate(session, tmp_path: Path) -> datetime:
         return_value=httpx.Response(200, json=_load("gamelog_579328_2023.json"))
     )
     respx.get(ARCHIVE_URL).mock(return_value=httpx.Response(200, json=_load("weather_archive_camden.json")))
+    respx.get(f"{LIVE_FEED_BASE}/game/{KIKUCHI_GAME_PK}/feed/live").mock(
+        return_value=httpx.Response(200, json=_lineup_feed_payload())
+    )
 
     ingest(session, ScheduleMLBAdapter(http_client=httpx.Client()), slate_date=SLATE_DATE)
     ingest(session, ProbablePitchersMLBAdapter(http_client=httpx.Client()), slate_date=SLATE_DATE)
@@ -55,6 +86,12 @@ def _ingest_full_slate(session, tmp_path: Path) -> datetime:
         PitcherGameLogsMLBAdapter(http_client=httpx.Client()),
         slate_date=SLATE_DATE,
         player_mlb_ids=[KIKUCHI_ID],
+    )
+    ingest(
+        session,
+        LineupMLBAdapter(http_client=httpx.Client()),
+        slate_date=SLATE_DATE,
+        mlb_game_pks=[KIKUCHI_GAME_PK],
     )
     ingest(session, ParkFactorsStaticAdapter(), slate_date=SLATE_DATE, venue_ids=[2])
 
@@ -117,11 +154,19 @@ def test_full_ingest_then_snapshot_resolves_real_kikuchi_entry(db_session, tmp_p
     assert entry.weather is not None
     assert len(entry.lines) == 1
     assert entry.lines[0].line == 5.5
+    # Kikuchi pitches for the Blue Jays (away); the lineup that matters
+    # for HIS entry is the Orioles' (home, the team he actually faces),
+    # never his own team's -- see _lineup_feed_payload's deliberately
+    # unposted away/Blue Jays lineup, proving this isn't just "whichever
+    # side happened to be posted."
+    assert entry.opponent_lineup is not None
+    assert entry.opponent_lineup.team_mlb_id == ORIOLES_TEAM_MLB_ID
 
     reason_codes = {f.reason_code for f in entry.quality_findings}
     assert "DATA_MISSING" in reason_codes  # umpire, always
     assert "STARTER_UNCONFIRMED" not in reason_codes  # this pitcher demonstrably started
     assert "MARKET_CONTEXT_INCOMPLETE" not in reason_codes  # line was found
+    assert "LINEUP_UNCONFIRMED" not in reason_codes  # opponent lineup was posted
 
 
 def test_snapshot_raw_refs_recorded_for_included_rows(db_session, tmp_path):
@@ -144,6 +189,7 @@ def test_snapshot_raw_refs_recorded_for_included_rows(db_session, tmp_path):
     assert "raw_lines" in tables_referenced
     assert "raw_park_factors" in tables_referenced
     assert "raw_weather_observations" in tables_referenced
+    assert "raw_lineups" in tables_referenced
 
 
 def test_snapshot_missing_line_produces_market_context_incomplete(db_session, tmp_path):
@@ -165,5 +211,10 @@ def test_snapshot_missing_line_produces_market_context_incomplete(db_session, tm
     snapshot, entries = build_snapshot(db_session, SLATE_DATE, cutoff)
     kikuchi_entries = [e for e in entries if e.probable and e.probable.player_mlb_id == KIKUCHI_ID]
     assert len(kikuchi_entries) == 1
-    reason_codes = {f.reason_code for f in kikuchi_entries[0].quality_findings}
+    entry = kikuchi_entries[0]
+    reason_codes = {f.reason_code for f in entry.quality_findings}
     assert "MARKET_CONTEXT_INCOMPLETE" in reason_codes
+    # No lineup was ingested at all in this test -- the opponent's lineup
+    # is correctly unresolved, not silently defaulted to "confirmed".
+    assert entry.opponent_lineup is None
+    assert "LINEUP_UNCONFIRMED" in reason_codes

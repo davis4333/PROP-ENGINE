@@ -25,7 +25,7 @@ from typing import Any, ClassVar, Literal
 
 from cassandra.db.base import Base
 
-AdapterKind = Literal["schedule", "pitcher_stats", "weather", "park", "umpire", "lines"]
+AdapterKind = Literal["schedule", "pitcher_stats", "weather", "park", "umpire", "lines", "lineup"]
 
 # Why an adapter reported is_available=False, for source-health semantics
 # (api/routers/admin.py, db/models/sources.py's SourceHealth.last_status).

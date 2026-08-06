@@ -29,7 +29,18 @@ DECISION_POLICY_VERSION = "k-decision-0.1.0"
 # WARN-severity findings serious enough to downgrade an otherwise-
 # qualifying edge to UNCERTAIN. Deliberately excludes DATA_MISSING (the
 # umpire stub's permanent, expected, never-blocking absence) -- see
-# adapters/umpire_stub.py and pit/snapshot_builder.py.
+# adapters/umpire_stub.py and pit/snapshot_builder.py. Also deliberately
+# excludes LINEUP_UNCONFIRMED (adapters/lineups_mlb.py): MLB commonly
+# hasn't posted a lineup until roughly 1-3 hours before first pitch, so
+# including it here would downgrade nearly every early-day evaluation to
+# UNCERTAIN regardless of real edge -- a sweeping behavior change to how
+# often anything shows QUALIFIED, not a data-quality call this build
+# should make unilaterally. The finding is still recorded and visible in
+# every projection's reason_codes (transparency), just not gating
+# decision_status yet. Whether/when it should gate is a real product
+# decision for Tyler once there's a real sense of typical lineup-posting
+# timing relative to the scheduler's run hours (settings.
+# auto_run_hours_local) -- not guessed at here.
 QUALITY_RISK_CODES = frozenset({"STARTER_UNCONFIRMED", "DATA_STALE", "DATA_CONFLICT", "LINE_SUSPENDED"})
 
 DECISIONS = ("OVER", "UNDER", "NO_PLAY")

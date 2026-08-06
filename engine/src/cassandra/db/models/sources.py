@@ -12,7 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from cassandra.db.base import Base
 
-SOURCE_KINDS = ("schedule", "pitcher_stats", "weather", "park", "umpire", "lines")
+SOURCE_KINDS = ("schedule", "pitcher_stats", "weather", "park", "umpire", "lines", "lineup")
 
 # SourceHealth.last_status vocabulary. `last_status` stays a free-text
 # String column (no CHECK constraint) rather than gaining a migration --

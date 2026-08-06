@@ -337,6 +337,9 @@ def test_run_slate_throttles_odds_api_to_once_per_real_calendar_day(db_session, 
         side_effect=_gamelog_side_effect
     )
     respx.get(ARCHIVE_URL).mock(return_value=httpx.Response(200, json=_load("weather_archive_camden.json")))
+    respx.route(url__regex=rf"{re.escape(LIVE_FEED_BASE)}/game/\d+/feed/live").mock(
+        side_effect=_feed_side_effect
+    )
     events_route, odds_route = _mock_odds_events_and_odds()
 
     client = httpx.Client()

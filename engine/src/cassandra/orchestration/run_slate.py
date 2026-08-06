@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from cassandra.adapters.final_box_scores_mlb import FinalBoxScoresMLBAdapter
 from cassandra.adapters.lines_manual import LinesManualAdapter
 from cassandra.adapters.lines_odds_api import LinesOddsApiAdapter
+from cassandra.adapters.lineups_mlb import LineupMLBAdapter
 from cassandra.adapters.park_factors_static import ParkFactorsStaticAdapter
 from cassandra.adapters.pitcher_game_logs_mlb import PitcherGameLogsMLBAdapter
 from cassandra.adapters.probable_pitchers_mlb import ProbablePitchersMLBAdapter
@@ -418,6 +419,18 @@ def ingest_slate(
             as_of=cutoff_at,
             run_id=run_id,
             player_mlb_ids=player_mlb_ids,
+        )
+    )
+
+    game_pks = sorted({g.mlb_game_pk for g in games if g.mlb_game_pk is not None})
+    results.append(
+        ingest(
+            session,
+            LineupMLBAdapter(http_client=client),
+            slate_date=slate_date,
+            as_of=cutoff_at,
+            run_id=run_id,
+            mlb_game_pks=game_pks,
         )
     )
 

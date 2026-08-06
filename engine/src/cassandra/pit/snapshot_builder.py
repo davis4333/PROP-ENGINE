@@ -23,6 +23,7 @@ from cassandra.config import slate_date_for
 from cassandra.db.models.identity import Game, Team
 from cassandra.db.models.raw import (
     RawLine,
+    RawLineup,
     RawParkFactor,
     RawPitcherGameLog,
     RawProbablePitcher,
@@ -34,6 +35,7 @@ from cassandra.ingestion.quality_gate import (
     check_data_stale,
     check_line_available,
     check_line_conflict,
+    check_lineup_confirmed,
     check_starter_confirmed,
 )
 from cassandra.pit.asof import all_as_of, latest_as_of, latest_grouped_as_of
@@ -56,6 +58,7 @@ class PitcherSlateEntry:
     park_factor: RawParkFactor | None
     weather: RawWeatherObservation | None
     lines: list[RawLine]
+    opponent_lineup: RawLineup | None = None
     quality_findings: list[QualityFinding] = field(default_factory=list)
 
 
@@ -93,6 +96,31 @@ def build_snapshot(
             starter_finding = check_starter_confirmed(probable)
             if starter_finding:
                 findings.append(starter_finding)
+
+            # The lineup that matters for THIS pitcher's projection is
+            # who he faces -- the OPPONENT's batting order, not his own
+            # team's.
+            opponent_team_mlb_id = next((t for t in mlb_team_ids if t != team_mlb_id), None)
+            opponent_lineup: RawLineup | None = None
+            if opponent_team_mlb_id is not None:
+                opponent_lineup = latest_as_of(
+                    session,
+                    RawLineup,
+                    {"mlb_game_pk": game.mlb_game_pk, "team_mlb_id": opponent_team_mlb_id},
+                    cutoff_at,
+                )
+                if opponent_lineup:
+                    _ref(
+                        session,
+                        seen_refs,
+                        snapshot.snapshot_id,
+                        "raw_lineups",
+                        opponent_lineup.raw_id,
+                        f"mlb_game_pk={game.mlb_game_pk},team_mlb_id={opponent_team_mlb_id}",
+                    )
+            lineup_finding = check_lineup_confirmed(opponent_lineup)
+            if lineup_finding:
+                findings.append(lineup_finding)
 
             game_logs: list[RawPitcherGameLog] = []
             park_factor: RawParkFactor | None = None
@@ -203,6 +231,7 @@ def build_snapshot(
                     park_factor=park_factor,
                     weather=weather,
                     lines=lines,
+                    opponent_lineup=opponent_lineup,
                     quality_findings=findings,
                 )
             )
