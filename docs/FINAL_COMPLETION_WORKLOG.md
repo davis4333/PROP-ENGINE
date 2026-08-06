@@ -142,4 +142,45 @@ directive's rule #10. Progress recorded below as each lands.
 
 ## Phase 1 progress log
 
-(updated per commit)
+### 1F -- fixed
+
+Re-verified before fixing: traced the actual call chain and found the
+directive's most alarming claim ("could produce a QUALIFIED pick with a
+fake line") does NOT fully materialize today --
+`ingestion/quality_gate.py`'s `check_line_available()` already returns a
+`fail`-severity `MARKET_CONTEXT_INCOMPLETE` finding when a pitcher has no
+line, and `decide()`'s existing `fail_findings` gate already forces
+`decision="NO_PLAY", decision_status="REJECTED"` before the edge/QUALIFIED
+path is ever reached. The real, confirmed gap: `probability_over`/
+`probability_under` were still computed from the caller's synthetic `0.5`
+line and stored as if meaningful, even on a REJECTED row, and the
+guarantee depended entirely on the caller (`run_slate.py`) remembering to
+run the quality gate first -- not a structural property of `decide()`
+itself.
+
+Fix: `decision/engine.py`'s `decide()` now accepts `line: float | None`
+directly and handles `None` as its own explicit branch -- returns
+`NO_PLAY`/`REJECTED`, `probability_over=None`, `probability_under=None`,
+adds `MARKET_CONTEXT_INCOMPLETE` to `reason_codes` if not already present
+-- BEFORE any probability is computed from a line. `Decision.
+probability_over`/`probability_under` changed from `float` to `float |
+None` (the DB column, API schema, and frontend types/rendering were
+already nullable/null-safe end-to-end -- confirmed by grep before
+changing anything, so this closes a gap those other layers had already
+anticipated). `run_slate.py` now passes `raw_line` straight through
+instead of substituting `0.5`.
+
+Tests: 4 new unit tests in `test_decision_engine.py` (forces REJECTED
+even at an extreme mean, probabilities null, no reason-code duplication,
+projection_mean/sd still visible for transparency). Extended the existing
+`test_run_slate_then_grade_slate_end_to_end` integration test to assert
+`probability_over`/`probability_under` are null and
+`MARKET_CONTEXT_INCOMPLETE` is present for no-line entries (this test
+already existed and passed before the fix, proving decision/
+decision_status were already correct -- the new assertions are what
+actually exercise the fix).
+
+Verified: 305 tests passing (301 + 4 new) against a fresh scratch
+database, ruff/mypy/guardrails clean.
+
+Remaining limitation: none identified for this specific issue.

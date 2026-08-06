@@ -282,10 +282,13 @@ def run_slate(
         for i, entry in enumerate(projectable):
             dist = model.predict(features_by_entry[i])
             raw_line = float(entry.lines[0].line) if entry.lines else None
-            decide_line = raw_line if raw_line is not None else 0.5
+            # raw_line passed as-is (never substituted with a placeholder
+            # value) -- decide() itself forces NO_PLAY/REJECTED with null
+            # probabilities when there's no real market line, rather than
+            # relying on a synthetic line the caller made up.
             decisions_by_entry[i] = (
                 raw_line,
-                decide(decide_line, dist, entry.quality_findings, edge_threshold=edge_threshold),
+                decide(raw_line, dist, entry.quality_findings, edge_threshold=edge_threshold),
             )
         qualified = sum(1 for _, d in decisions_by_entry.values() if d.decision_status == "QUALIFIED")
         _stage(

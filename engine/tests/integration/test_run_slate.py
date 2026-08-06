@@ -123,6 +123,12 @@ def test_run_slate_then_grade_slate_end_to_end(db_session, tmp_path: Path):
     assert no_line_projs
     assert all(p.decision == "NO_PLAY" and p.decision_status == "REJECTED" for p in no_line_projs)
     assert all(p.line is None for p in no_line_projs)
+    # Regression: decide() used to receive a caller-substituted synthetic
+    # 0.5 line for these entries, so probability_over/under were computed
+    # against a line that never existed and stored as if meaningful.
+    # decide() now forces both to null whenever there's no real line.
+    assert all(p.probability_over is None and p.probability_under is None for p in no_line_projs)
+    assert all("MARKET_CONTEXT_INCOMPLETE" in p.reason_codes for p in no_line_projs)
 
     stages = (
         db_session.query(PipelineRunStage)

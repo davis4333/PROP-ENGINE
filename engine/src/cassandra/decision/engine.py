@@ -51,8 +51,8 @@ DECISION_STATUSES = ("QUALIFIED", "UNCERTAIN", "HELD", "REJECTED")
 class Decision:
     decision: str
     decision_status: str
-    probability_over: float
-    probability_under: float
+    probability_over: float | None
+    probability_under: float | None
     projection_mean: float
     projection_sd: float
     edge: float
@@ -61,7 +61,7 @@ class Decision:
 
 
 def decide(
-    line: float,
+    line: float | None,
     distribution: StrikeoutDistribution,
     quality_findings: list[QualityFinding],
     edge_threshold: float | None = None,
@@ -71,13 +71,41 @@ def decide(
     fail_findings = [f for f in quality_findings if f.status == "fail"]
     warn_findings = [f for f in quality_findings if f.status == "warn"]
     all_codes = [f.reason_code for f in quality_findings]
+    sd = getattr(distribution, "sd", math.sqrt(max(distribution.mean, 0.0)))
+
+    if line is None:
+        # No real market line for this player/market -- never invent one
+        # (CLAUDE.md non-negotiable #4: "No Play" is valid, never force a
+        # pick). This is a structural guarantee, not just a consequence of
+        # ingestion/quality_gate.py's check_line_available already adding
+        # a fail-severity MARKET_CONTEXT_INCOMPLETE finding upstream (it
+        # does, and callers should still pass that finding through) --
+        # even if a future caller ever forgot to run that check, passing
+        # line=None here still cannot produce a forced OVER/UNDER pick or
+        # a probability computed against a fake threshold. Found and fixed
+        # after an audit: the previous version accepted a caller-supplied
+        # synthetic 0.5 line, which -- because floor(0.5) == 0 and P(K>0)
+        # is close to 1.0 for almost any real start -- could compute a
+        # large "edge" against a line that was never real.
+        reason_codes = list(all_codes)
+        if "MARKET_CONTEXT_INCOMPLETE" not in reason_codes:
+            reason_codes.append("MARKET_CONTEXT_INCOMPLETE")
+        return Decision(
+            decision="NO_PLAY",
+            decision_status="REJECTED",
+            probability_over=None,
+            probability_under=None,
+            projection_mean=distribution.mean,
+            projection_sd=sd,
+            edge=0.0,
+            reason_codes=reason_codes,
+        )
 
     # P(strikeouts > line). Lines are conventionally X.5, so floor(line)
     # is the largest whole strikeout count still counted as "under."
     threshold_k = math.floor(line)
     probability_over = 1.0 - distribution.cdf(threshold_k)
     probability_under = 1.0 - probability_over
-    sd = getattr(distribution, "sd", math.sqrt(max(distribution.mean, 0.0)))
 
     if fail_findings:
         return Decision(

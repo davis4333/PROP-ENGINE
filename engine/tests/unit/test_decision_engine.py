@@ -41,6 +41,50 @@ def test_fail_finding_forces_rejected_no_play_even_with_strong_edge():
     assert "DATA_MISSING" in result.reason_codes
 
 
+def test_no_line_forces_rejected_no_play_even_with_extreme_mean():
+    # Regression: decide() used to be called with a caller-substituted
+    # synthetic 0.5 line when no real market line existed. Because
+    # floor(0.5) == 0 and P(K>0) is close to 1.0 for almost any real
+    # start, that could compute a large "edge" against a line that was
+    # never real, landing as a fully QUALIFIED OVER pick. line=None must
+    # now force NO_PLAY/REJECTED structurally, regardless of how extreme
+    # the model's own mean is.
+    dist = PoissonStrikeoutDistribution(mean=9.0)
+    result = decide(None, dist, [], edge_threshold=0.05)
+    assert result.decision == "NO_PLAY"
+    assert result.decision_status == "REJECTED"
+    assert result.edge == 0.0
+    assert "MARKET_CONTEXT_INCOMPLETE" in result.reason_codes
+
+
+def test_no_line_never_computes_probabilities_against_a_fake_threshold():
+    dist = PoissonStrikeoutDistribution(mean=9.0)
+    result = decide(None, dist, [], edge_threshold=0.05)
+    assert result.probability_over is None
+    assert result.probability_under is None
+
+
+def test_no_line_does_not_duplicate_market_context_incomplete_already_present():
+    # ingestion/quality_gate.py's check_line_available already adds this
+    # same reason code as a fail-severity finding when lines_latest_first
+    # is empty -- decide() must not add a second copy when the caller
+    # already passed it through.
+    dist = PoissonStrikeoutDistribution(mean=9.0)
+    findings = [QualityFinding("MARKET_CONTEXT_INCOMPLETE", "no line", "fail")]
+    result = decide(None, dist, findings, edge_threshold=0.05)
+    assert result.reason_codes.count("MARKET_CONTEXT_INCOMPLETE") == 1
+
+
+def test_no_line_still_reports_projection_mean_and_sd():
+    # A missing line doesn't mean the model couldn't run -- only that
+    # there's nothing to compare it against. The raw projection is still
+    # visible (transparency), just never a betting decision.
+    dist = PoissonStrikeoutDistribution(mean=9.0)
+    result = decide(None, dist, [], edge_threshold=0.05)
+    assert result.projection_mean == 9.0
+    assert result.projection_sd == dist.sd
+
+
 def test_warn_quality_risk_downgrades_otherwise_qualified_edge():
     dist = PoissonStrikeoutDistribution(mean=9.0)
     findings = [QualityFinding("STARTER_UNCONFIRMED", "not confirmed", "warn")]
