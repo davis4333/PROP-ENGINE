@@ -4,7 +4,7 @@ const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:8000";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  allowedDevOrigins: ["127.0.0.1", "localhost"],
+  allowedDevOrigins: ["127.0.0.1", "localhost", "*.replit.dev", "*.spock.replit.dev"],
   // Proxies the browser's client-side Admin-page requests (which can't
   // use API_BASE_URL directly -- it's server-only, never sent to the
   // browser) to the engine through this same origin. This means only one

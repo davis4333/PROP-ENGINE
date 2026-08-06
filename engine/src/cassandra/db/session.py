@@ -6,7 +6,17 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from cassandra.config import settings
 
-engine = create_engine(settings.database_url, future=True)
+engine = create_engine(
+    settings.database_url,
+    future=True,
+    # pool_pre_ping: test each connection before use so that connections
+    # killed by the Postgres provider's idle-timeout (AdminShutdown) are
+    # detected and recycled automatically instead of raising mid-request.
+    pool_pre_ping=True,
+    # pool_recycle: proactively replace connections older than 4.5 minutes,
+    # well under the typical provider idle-timeout (Neon: 5 min default).
+    pool_recycle=270,
+)
 # expire_on_commit=False: both the CLI and callers of orchestration's
 # run_slate()/grade_slate_run() read attributes off ORM objects (e.g.
 # Projection.player_id) after session_scope()'s commit, once the session

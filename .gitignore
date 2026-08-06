@@ -35,3 +35,7 @@ engine/data/lines_drops/*
 # Scratch staging area for the PreToolUse guardrails hook (see
 # scripts/pretool_guardrails_check.py) -- always cleaned up after use.
 .guardrail_precheck/
+
+# Local backups and uploaded assets (Replit-only, not for version control)
+backup_*.sql
+attached_assets/
