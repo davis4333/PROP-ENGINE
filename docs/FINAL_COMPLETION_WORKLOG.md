@@ -1,0 +1,145 @@
+# Final Completion Worklog
+
+Living document for the "CASSANDRA MLB STRIKEOUT ENGINE — FINAL
+CORRECTNESS, LEARNING-SYSTEM, AND PRIVATE-BETA COMPLETION DIRECTIVE."
+Updated as each phase completes. This session has repo/workspace access
+only -- no Replit production access. Nothing in this document should be
+read as a claim that anything is deployed or production-verified; see
+each phase's "manual Replit actions" note for what Tyler must do.
+
+## Starting state (Phase 0)
+
+- Branch: `claude/repo-reset-jexzz6`
+- Starting SHA: `1396fd969fc6631a7370d739679ba6b3fdcdf9fe` (matches the
+  directive's "last independently reviewed commit" exactly -- confirmed
+  via `git rev-parse HEAD`, no commits in between, no uncommitted changes
+  at start).
+- Full verification against a fresh scratch Postgres database
+  (`cassandra_verify`, migrated via `alembic upgrade head`, dropped
+  before/recreated for a clean run):
+  - `alembic upgrade head`: applies cleanly through
+    `b8975f126305` (add historical weather observations table).
+  - `alembic check`: "No new upgrade operations detected."
+  - `pytest`: **301 passed**, 0 failed, 1 pre-existing unrelated
+    deprecation warning (`starlette.testclient` httpx usage).
+  - `ruff check .`: all checks passed.
+  - `mypy src`: no issues found in 82 source files.
+  - Frontend (`web/`): `pnpm run typecheck` clean, `pnpm run lint` clean.
+
+This matches the directive's claimed baseline (~301 tests) -- confirmed,
+not assumed.
+
+## Phase 1 audit -- confirmed findings (real code inspection, not assumed from the directive's text)
+
+All six Phase 1 concerns were independently verified against the actual
+HEAD code before any fix was written, per the directive's "verify before
+modifying" rule. All six are **real, confirmed bugs**:
+
+### 1A -- park-factor same-game/same-date leakage (CONFIRMED, CRITICAL)
+
+`historical/dataset_builder.py`'s `build_training_dataset()`: the loop
+over `targets` (ordered only by `HistoricalPitcherStart.game_date.asc()`,
+a plain `date` column with no secondary tiebreaker) calls
+`park_factor_accumulator.park_factor_for(venue)` to read a row's factor,
+writes the row, then IMMEDIATELY calls
+`park_factor_accumulator.record_outcome(venue, ...)` before moving to the
+next row. Two starters from the *same game* (home + away, same venue,
+same `game_date`) have no guaranteed relative ordering from a `date`-only
+`ORDER BY` -- whichever one is processed second would see the first's
+outcome already folded into its own park factor, since both share a
+`game_date` and the accumulator has already been updated by the time the
+second row reads it. This is a real point-in-time/self-referential
+leakage bug, introduced in this same repository's most recent commit
+(`1396fd9`, this session's own prior work). Confirmed by direct code
+reading, not by running a failing test yet (a regression test is part of
+the fix).
+
+### 1B -- durable failed-run recording (CONFIRMED, CRITICAL for operability)
+
+`orchestration/run_slate.py`'s `run_slate()`/`grade_slate_run()`: on
+exception, the `except` block calls `_finish_run(status="failed")` and
+adds a `RUN_FAILED` `AuditEvent`, then re-raises. Both callers
+(`cli/main.py`'s commands, the scheduler, the API) run this inside
+`db/session.py`'s `session_scope()`, which is confirmed (read directly)
+to do `session.rollback()` on ANY exception before re-raising. Since
+`run_slate()`'s `_start_run()`, every `_stage()` call, and the failure
+marking are ALL on the same session/transaction with no intermediate
+commit, a failure ANYWHERE in the pipeline (including late, e.g. mid-
+PUBLISH) rolls back the ENTIRE transaction -- not just the failure
+record, but the `PipelineRun` row itself and every previously-succeeded
+stage row. **A failed run currently leaves zero trace in the database.**
+Admin's status endpoint (which reads `PipelineRun`/`PipelineRunStage`)
+would never show a failed run occurred at all. Confirmed by tracing the
+actual transaction lifecycle, not assumed.
+
+### 1C -- scheduler success-counting bug (CONFIRMED)
+
+`orchestration/scheduler.py`'s `_run_slate_success_count_today()`:
+counts `PipelineRunStage.stage == "PUBLISH", PipelineRunStage.status !=
+"skipped"`. This counts `"running"` (a crashed/interrupted run stuck
+mid-stage) and `"failed"` as "succeeded," not just `"succeeded"`.
+Combined with 1B (a genuinely failed run currently leaves no row at all,
+post-fix it WILL leave a `"failed"` PUBLISH row), this bug would
+currently under-count in practice (nothing survives to be miscounted)
+but would become a real bug the moment 1B is fixed, so both must land
+together or in the correct order (1B first, so 1C's fix is verifiable
+against real failed-run rows).
+
+### 1D -- integer-line push probability (CONFIRMED)
+
+`decision/engine.py`'s `decide()`: `probability_under = 1.0 -
+probability_over`. For a half-integer line this is correct (no push is
+possible). For an integer line, `probability_over = P(K > line)` is
+correct, but `1 - probability_over = P(K <= line)` silently includes
+`P(K == line)` (the push case) inside "under" -- there is no
+`probability_push` field anywhere in `Decision`, the `projections` table,
+or the API schema. A push is currently invisible and mis-attributed.
+
+### 1E -- source-health counter pollution (CONFIRMED)
+
+`ingestion/ingest_service.py`'s `_update_source_health()`:
+`consecutive_failures` increments on ANY `success=False`, including the
+expected/non-error `unavailable_reason` values `"pending"`, `"disabled"`,
+`"quota_limited"`. `_source_health_status()` correctly labels these
+states (`PENDING`/`DISABLED`/`QUOTA_LIMITED`, never `FAILED`) so the
+*visible* status isn't currently wrong, but the underlying counter is
+polluted -- a source that's legitimately `PENDING` for hours accumulates
+a large `consecutive_failures` count that would cause a subsequent
+*real* error streak to hit the `FAILED` threshold (3) almost immediately
+instead of after 3 genuine consecutive errors, since the counter doesn't
+distinguish expected-unavailable ticks from real failures.
+
+### 1F -- missing-line synthetic-0.5 decision (CONFIRMED, CRITICAL for user trust)
+
+`orchestration/run_slate.py`'s `run_slate()`: `decide_line = raw_line if
+raw_line is not None else 0.5` -- when a confirmed starter has NO market
+line at all, a synthetic `0.5` line is passed into `decide()` rather than
+skipping/forcing `NO_PLAY`. Since `floor(0.5) == 0`, `probability_over =
+P(K > 0)`, which is close to 1.0 for almost any real starting pitcher --
+producing a large positive edge, very likely clearing
+`DECISION_EDGE_THRESHOLD`, and landing as a fully `QUALIFIED` `OVER` pick
+with **no reason code indicating the line was fake**. This directly
+violates CLAUDE.md non-negotiable #4 ("No Play is a valid, expected
+decision -- never force a pick") and Appendix A's `MARKET_CONTEXT_
+INCOMPLETE` reason code, which exists in the vocabulary but isn't wired
+to this path.
+
+## Fix order
+
+Prioritized by severity against CLAUDE.md's own non-negotiables (point-in-time
+correctness and honest, never-forced decisions rank above operational
+reliability, which ranks above cosmetic counter accuracy):
+
+1. 1F (forced/fake pick from a missing line -- most user-facing risk)
+2. 1D (push probability miscalculation -- direct grading/decision correctness)
+3. 1A (park-factor self-leakage -- training-data integrity, not live-decision-facing but a real point-in-time violation)
+4. 1B (durable failed-run recording -- required before 1C can be verified)
+5. 1C (scheduler success miscounting -- depends on 1B)
+6. 1E (source-health counter pollution)
+
+Each gets its own focused commit with regression tests, per the
+directive's rule #10. Progress recorded below as each lands.
+
+## Phase 1 progress log
+
+(updated per commit)
