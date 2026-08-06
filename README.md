@@ -110,6 +110,7 @@ See `docs/HISTORICAL_BACKFILL_RUNBOOK.md` for full detail.
 cd engine
 .venv/bin/cassandra backfill-mlb --start-date 2023-01-01   # resumable by default
 .venv/bin/cassandra backfill-status
+.venv/bin/cassandra backfill-weather --start-date 2023-01-01  # enrich already-backfilled games with weather
 .venv/bin/cassandra audit-historical-coverage --start-date 2023-01-01
 ```
 

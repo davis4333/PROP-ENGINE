@@ -33,9 +33,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from cassandra.db.models.historical import HistoricalPitcherStart
-from cassandra.db.models.identity import Game
-from cassandra.features.builders import compute_recent_k_rate
+from cassandra.db.models.historical import HistoricalPitcherStart, HistoricalWeatherObservation
+from cassandra.db.models.identity import Game, Venue
+from cassandra.features.builders import compute_recent_k_rate, compute_weather_adjustment
 from cassandra.features.expected_bf import EXPECTED_BF_VERSION, compute_expected_bf
 from cassandra.features.registry import FEATURE_SET_VERSION
 from cassandra.historical.availability import (
@@ -43,24 +43,49 @@ from cassandra.historical.availability import (
     DATASET_TIER_STRICT_LIVE_COMPATIBLE,
     eligible_prior_starts,
 )
+from cassandra.historical.park_factors import ParkFactorAccumulator
 
-DATASET_BUILDER_VERSION = "training-dataset-builder-0.1.0"
+# Bumped from 0.1.0: park_factor/weather rows now carry real computed
+# values (see park_factors.py, db/models/historical.py's
+# HistoricalWeatherObservation) instead of being wholesale excluded --
+# this is a real output-schema change, not a cosmetic one, so a dataset
+# built under the old version is not silently equivalent to one built
+# under this one.
+DATASET_BUILDER_VERSION = "training-dataset-builder-0.2.0"
 DEFAULT_OUTPUT_DIR = Path("data/training_datasets")
 
 # Feature groups the spec calls for that this backfill pass does not yet
 # collect (docs/TRAINING_READINESS_REPORT.md) -- listed explicitly on
 # every manifest so a dataset's limitations are never implied by silence.
+# park_factor/weather were here through 0.1.0; both are now real (see
+# park_factors.py and HistoricalWeatherObservation) so they're no longer
+# blanket-excluded -- each row's own *_available flag still honestly
+# reports whether this specific row actually got a resolved value.
 EXCLUDED_FEATURE_GROUPS = (
     "pitch_mix",
     "velocity",
     "csw_rate",
-    "park_factor",
-    "weather",
     "opponent_rolling_k_context",
     "lineup_features",
     "umpire",
     "pitcher_handedness",
 )
+
+# Flagged explicitly on every row that has weather, not silently omitted
+# (independent point-in-time-auditor review of this feature): the live
+# pipeline's weather feature (`adapters/weather_openmeteo.py`) is a
+# FORECAST fetched pregame -- it can be wrong (a temp swing, a storm that
+# didn't materialize). This historical dataset's weather
+# (`HistoricalWeatherObservation`) is MLB's own realized/ACTUAL condition
+# from the completed game feed -- strictly more accurate than what the
+# live pipeline could ever actually have pregame. This is not a leakage
+# bug (it's still that same game's own weather, never a future game's,
+# and no timestamp/cutoff is violated), but it IS a real information-
+# quality mismatch: a model trained on this feature sees cleaner input
+# than production ever provides it, so a training-vs-live performance gap
+# attributable to weather specifically should not be surprising. No
+# forecast-based historical weather source exists yet to close this gap.
+WEATHER_SOURCE_ACTUAL = "actual"
 
 
 @dataclass(frozen=True)
@@ -81,6 +106,17 @@ def _as_shims(prior_starts: list[HistoricalPitcherStart]) -> list[_PriorStartShi
         _PriorStartShim(batters_faced=s.batters_faced, strikeouts=s.strikeouts, stat_date=s.game_date)
         for s in prior_starts
     ]
+
+
+@dataclass(frozen=True)
+class _WeatherShim:
+    """Adapts `HistoricalWeatherObservation`'s `temp_f` to
+    `features/builders.py`'s `WeatherLike` protocol, same reasoning as
+    `_PriorStartShim` above -- reuses `compute_weather_adjustment` exactly
+    as the live pipeline calls it rather than a parallel copy that could
+    silently drift."""
+
+    temp_f: float | None
 
 
 @dataclass(frozen=True)
@@ -123,7 +159,7 @@ def build_training_dataset(
     built_at = datetime.now(UTC)
 
     stmt = (
-        select(HistoricalPitcherStart, Game.game_type, Game.season)
+        select(HistoricalPitcherStart, Game.game_type, Game.season, Game.venue_id)
         .join(Game, Game.mlb_game_pk == HistoricalPitcherStart.mlb_game_pk)
         .where(
             HistoricalPitcherStart.is_starter.is_(True),
@@ -137,13 +173,46 @@ def build_training_dataset(
     )
     targets = session.execute(stmt).all()
 
+    # venue_id (our string identity id) -> raw MLB venue id, for the park-
+    # factor accumulator below (park_factors.py keys on the raw MLB id,
+    # matching orchestration/run_slate.py's VENUE_COORDINATES convention).
+    venue_id_query = select(Venue.venue_id, Venue.mlb_venue_id).where(Venue.mlb_venue_id.isnot(None))
+    venue_mlb_id_by_venue_id: dict[str, int] = {
+        venue_id: mlb_id for venue_id, mlb_id in session.execute(venue_id_query).all() if mlb_id is not None
+    }
+    # One batch query for every weather row this build could possibly need,
+    # rather than one query per row -- weather_by_game_pk.get() below is a
+    # dict lookup, not a DB round trip.
+    game_pks = [start.mlb_game_pk for start, _, _, _ in targets]
+    weather_by_game_pk: dict[int, HistoricalWeatherObservation] = {
+        w.mlb_game_pk: w
+        for w in session.execute(
+            select(HistoricalWeatherObservation).where(HistoricalWeatherObservation.mlb_game_pk.in_(game_pks))
+        )
+        .scalars()
+        .all()
+    }
+    # Chronological single-pass accumulator (targets is already ordered by
+    # game_date.asc()) -- scoped to this build's own season/game_type
+    # population (the same rows this dataset is built from), not the full
+    # unrestricted historical_pitcher_starts table. This means an early
+    # row in a season-restricted build (e.g. seasons=[2024] only, omitting
+    # 2023) can under-report park-factor availability versus a full-range
+    # build that would have more prior context at the same venue -- an
+    # honest completeness gap, not a leakage risk: MIN_BATTERS_FACED_FOR_
+    # PARK_FACTOR always reports "unavailable" rather than ever leaking a
+    # future or out-of-scope game's outcome into an early row's factor.
+    park_factor_accumulator = ParkFactorAccumulator()
+
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{dataset_id}.jsonl.gz"
 
     row_count = 0
     tier_counts: dict[str, int] = {}
+    park_factor_available_count = 0
+    weather_available_count = 0
     with gzip.open(output_path, "wt", encoding="utf-8") as fh:
-        for start, game_type, season in targets:
+        for start, game_type, season, venue_id in targets:
             prior = eligible_prior_starts(
                 session, player_mlb_id=start.player_mlb_id, before_date=start.game_date
             )
@@ -152,6 +221,17 @@ def build_training_dataset(
             k_rate_result = compute_recent_k_rate(shims)
             rest_days = (start.game_date - prior[0].game_date).days if prior else None
             tier_counts[k_rate_result.tier] = tier_counts.get(k_rate_result.tier, 0) + 1
+
+            venue_mlb_id = venue_mlb_id_by_venue_id.get(venue_id) if venue_id else None
+            # Read BEFORE record_outcome below -- this row's own outcome
+            # must never contribute to its own park factor.
+            park_result = park_factor_accumulator.park_factor_for(venue_mlb_id)
+            weather_row = weather_by_game_pk.get(start.mlb_game_pk)
+            weather_temp = weather_row.temp_f if weather_row is not None else None
+            weather_is_available = weather_temp is not None
+            weather_adjustment = compute_weather_adjustment(
+                _WeatherShim(temp_f=float(weather_temp)) if weather_temp is not None else None
+            )
 
             row = {
                 # Provenance -- docs/HISTORICAL_AVAILABILITY_POLICY.md's
@@ -182,10 +262,16 @@ def build_training_dataset(
                 "recent_k_rate_starts_used": k_rate_result.starts_used,
                 "rest_days": rest_days,
                 "prior_starts_available": len(prior),
-                # Source coverage flags -- always False in this pass, per
-                # excluded_feature_groups below; never silently omitted.
-                "park_factor_available": False,
-                "weather_available": False,
+                "park_k_factor": park_result.value,
+                "park_factor_available": park_result.available,
+                "weather_adjustment": weather_adjustment,
+                "weather_available": weather_is_available,
+                # WEATHER_SOURCE_ACTUAL, not omitted, when available -- see
+                # that constant's docstring for why this is flagged
+                # per-row rather than silently assumed equivalent to what
+                # the live pipeline sees.
+                "weather_source": WEATHER_SOURCE_ACTUAL if weather_is_available else None,
+                # Still real gaps -- see EXCLUDED_FEATURE_GROUPS.
                 "lineup_available": False,
                 "umpire_available": False,
                 "actual_strikeouts": start.strikeouts,
@@ -197,6 +283,14 @@ def build_training_dataset(
             }
             fh.write(json.dumps(row) + "\n")
             row_count += 1
+            if row["park_factor_available"]:
+                park_factor_available_count += 1
+            if row["weather_available"]:
+                weather_available_count += 1
+            # AFTER writing the row -- this game's own outcome becomes
+            # eligible for the NEXT (strictly later) row's park factor,
+            # never this one's.
+            park_factor_accumulator.record_outcome(venue_mlb_id, start.batters_faced, start.strikeouts)
 
     manifest = DatasetManifest(
         dataset_id=dataset_id,
@@ -212,7 +306,11 @@ def build_training_dataset(
         row_count=row_count,
         output_path=str(output_path),
         excluded_feature_groups=list(EXCLUDED_FEATURE_GROUPS),
-        coverage_notes={"recent_k_rate_tier_counts": tier_counts},
+        coverage_notes={
+            "recent_k_rate_tier_counts": tier_counts,
+            "park_factor_available_count": park_factor_available_count,
+            "weather_available_count": weather_available_count,
+        },
     )
     manifest_path = output_dir / f"{dataset_id}.manifest.json"
     manifest_path.write_text(json.dumps(asdict(manifest), indent=2))

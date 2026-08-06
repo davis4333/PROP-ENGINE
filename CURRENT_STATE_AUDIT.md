@@ -456,6 +456,42 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   every report is `HISTORICAL_RECONSTRUCTION`-labeled and written to its
   own frozen file; nothing in this repository ever writes a challenger's
   predictions to `projections`/`grades`.
+- **Historical weather and park factors are real and implemented (Phase
+  4)**: `historical/backfill.py`'s `process_game_feed` captures
+  `gameData.weather`/`gameData.venue` from the SAME MLB feed payload it
+  already fetches per game (no new external calls) into
+  `historical_weather_observations`
+  (`db/models/historical.py`'s `HistoricalWeatherObservation`, migration
+  `b8975f126305`) -- ground truth for that specific game (dome/roofed
+  venues report MLB's own condition value, e.g. `"Dome"`, as-is). A
+  dedicated `cassandra backfill-weather` pass (`process_weather_for_game`/
+  `run_weather_backfill`, its own resumable `BackfillItem` domain)
+  enriches games backfilled before this feature existed. Park factors are
+  computed, not a static table: `historical/park_factors.py`'s
+  `ParkFactorAccumulator` walks `historical_pitcher_starts` in a single
+  chronological pass (venue K-rate ÷ league K-rate, clipped to
+  `models/baseline.py`'s `PARK_ADJ_BOUNDS`), available only once a venue
+  clears `MIN_BATTERS_FACED_FOR_PARK_FACTOR` (400) batters faced in its
+  own strictly-prior history. Point-in-time-safe by construction (a
+  row's own outcome is recorded into the accumulator only AFTER that
+  row's own factor is read) -- verified by `tests/unit/test_park_factors.py`
+  and a dedicated leakage test in `tests/integration/test_dataset_builder.py`.
+  `features/builders.py`'s `compute_weather_adjustment` (the exact
+  function the live pipeline calls) now takes a `WeatherLike` Protocol
+  instead of the live-only `RawWeatherObservation` class (mirroring
+  `expected_bf.py`'s existing `GameLogLike` pattern) so the historical
+  dataset reuses identical adjustment logic rather than a parallel copy
+  that could drift. `historical/dataset_builder.py`'s
+  `EXCLUDED_FEATURE_GROUPS` no longer lists `park_factor`/`weather` --
+  each row's `park_factor_available`/`weather_available` flags still
+  honestly report whether THAT row actually resolved a value.
+  `DATASET_BUILDER_VERSION` bumped to `0.2.0` (real output-schema change).
+  Not yet done: re-running the walk-forward baseline-vs-challenger
+  comparison with these two features wired into the challenger's own
+  predictor set (`historical/challenger_poisson.py` still trains on the
+  same reduced `expected_bf`/`recent_k_rate`/`rest_days` set it always
+  has, deliberately matching the permanent baseline's inputs for a fair
+  comparison) -- a real product/modeling decision, not an oversight.
 - **Not yet built**: negative-binomial/gradient-boosted challenger
   alternatives, a model registry (each run's report is frozen and
   versioned individually, but there's no index across runs or promotion-
@@ -463,8 +499,7 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   full "what's still not built" list. Also not yet collected/implemented
   (reported honestly, not silently omitted -- every dataset manifest/row
   records these as unavailable, and `audit-historical-coverage` surfaces
-  them too): pitch-level/plate-appearance detail, historical weather,
-  park factors computed from prior completed games, opponent rolling
+  them too): pitch-level/plate-appearance detail, opponent rolling
   strikeout context, player identity resolution for backfilled pitchers
   (so pitcher handedness isn't available), and the
   `RETROSPECTIVE_ENRICHED` tier (nothing enriched exists yet to build it

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import subprocess
 import time
 import uuid
@@ -55,6 +56,7 @@ from cassandra.db.models.historical import (
     BackfillRun,
     HistoricalLineup,
     HistoricalPitcherStart,
+    HistoricalWeatherObservation,
 )
 from cassandra.db.models.identity import Game
 from cassandra.db.models.sources import Source
@@ -67,6 +69,7 @@ BACKFILL_SOURCE_NAME = "mlb_stats_api_historical_backfill"
 BACKFILL_ADAPTER_VERSION = "0.1.0"
 
 SCHEDULE_DOMAIN = "schedule"
+WEATHER_DOMAIN = "weather"
 GAME_DOMAIN = "game_feed"
 
 DEFAULT_MAX_RETRIES = 5
@@ -420,6 +423,66 @@ def _upsert_historical_lineup(
     session.execute(stmt)
 
 
+_WIND_MPH_RE = re.compile(r"([\d.]+)\s*mph", re.IGNORECASE)
+
+
+def _parse_weather_block(
+    weather: dict[str, Any],
+) -> tuple[str | None, float | None, float | None, str | None]:
+    """Parses MLB's free-text `gameData.weather` block (e.g.
+    `{"condition": "Partly Cloudy", "temp": "79", "wind": "3 mph, R To L"}`,
+    or `{"condition": "Dome", "temp": "72", "wind": "0 mph, None"}` for a
+    roofed venue -- reported as-is, not normalized away, since
+    `features/builders.py`'s `compute_weather_adjustment` already treats a
+    missing/non-numeric temp defensively). Returns
+    (condition, temp_f, wind_mph, wind_detail); any field that fails to
+    parse is None rather than raising -- a malformed weather block is not
+    a reason to fail the whole game's backfill item."""
+    condition = weather.get("condition") or None
+    temp_raw = weather.get("temp")
+    try:
+        temp_f = float(temp_raw) if temp_raw is not None else None
+    except ValueError:
+        temp_f = None
+    wind_raw = weather.get("wind") or ""
+    wind_match = _WIND_MPH_RE.search(wind_raw)
+    wind_mph = float(wind_match.group(1)) if wind_match else None
+    wind_detail = wind_raw.split(",", 1)[1].strip() if "," in wind_raw else None
+    return condition, temp_f, wind_mph, wind_detail
+
+
+def _upsert_historical_weather(
+    session: Session,
+    *,
+    mlb_game_pk: int,
+    game_date_val: date,
+    venue_mlb_id: int | None,
+    weather_block: dict[str, Any],
+    source_id: str,
+    backfill_run_id: str,
+    observed_at: datetime,
+) -> None:
+    condition, temp_f, wind_mph, wind_detail = _parse_weather_block(weather_block)
+    values: dict[str, Any] = {
+        "mlb_game_pk": mlb_game_pk,
+        "game_date": game_date_val,
+        "venue_mlb_id": venue_mlb_id,
+        "condition": condition,
+        "temp_f": temp_f,
+        "wind_mph": wind_mph,
+        "wind_detail": wind_detail,
+        "capture_mode": CAPTURE_MODE_HISTORICAL_ACTUAL,
+        "source_id": source_id,
+        "backfill_run_id": backfill_run_id,
+        "observed_at": observed_at,
+        "payload": weather_block,
+    }
+    stmt = pg_insert(HistoricalWeatherObservation).values(**values)
+    update_cols = {k: v for k, v in values.items() if k != "mlb_game_pk"}
+    stmt = stmt.on_conflict_do_update(index_elements=["mlb_game_pk"], set_=update_cols)
+    session.execute(stmt)
+
+
 def process_game_feed(
     session: Session,
     client: httpx.Client,
@@ -554,6 +617,20 @@ def process_game_feed(
                     player_entry=player_entry,
                 )
 
+    weather_block = payload.get("gameData", {}).get("weather")
+    if weather_block:
+        venue_mlb_id = payload.get("gameData", {}).get("venue", {}).get("id")
+        _upsert_historical_weather(
+            session,
+            mlb_game_pk=game_pk,
+            game_date_val=game_date_val,
+            venue_mlb_id=venue_mlb_id,
+            weather_block=weather_block,
+            source_id=source_id,
+            backfill_run_id=run.backfill_run_id,
+            observed_at=fetched_at,
+        )
+
     session.flush()
     if pitcher_rows == 0:
         _mark_item(
@@ -567,6 +644,161 @@ def process_game_feed(
 
     _mark_item(session, item, status="succeeded", run_id=run.backfill_run_id)
     return "succeeded"
+
+
+def process_weather_for_game(
+    session: Session,
+    client: httpx.Client,
+    *,
+    game_pk: int,
+    source_id: str,
+    config: BackfillConfig,
+    run: BackfillRun,
+) -> str:
+    """Backfills weather for ONE already-processed game -- a dedicated
+    WEATHER_DOMAIN item, separate from GAME_DOMAIN's own tracking, so this
+    can resume/retry independently of (and without disturbing) the
+    already-completed pitcher/lineup backfill. Re-fetches the same feed
+    URL `process_game_feed` already fetched for this game, specifically to
+    read `gameData.weather` -- a real, if avoidable, re-fetch cost, since
+    the original backfill pass discarded that field rather than storing it
+    (see db/models/historical.py's `HistoricalWeatherObservation`
+    docstring). A NEW game backfilled after this function existed never
+    needs this path at all -- `process_game_feed` above stores weather
+    directly on first pass."""
+    work_key = str(game_pk)
+    item = _get_or_create_item(
+        session, backfill_run_id=run.backfill_run_id, domain=WEATHER_DOMAIN, work_key=work_key
+    )
+    if item.status == "succeeded":
+        return "succeeded"
+
+    response = _request_with_retry(
+        client,
+        f"{LIVE_FEED_BASE}/game/{game_pk}/feed/live",
+        max_retries=config.max_retries,
+        request_delay=config.request_delay_seconds,
+    )
+    if response is None:
+        _mark_item(
+            session,
+            item,
+            status="failed",
+            run_id=run.backfill_run_id,
+            error="feed fetch failed after retries",
+        )
+        return "failed"
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        _mark_item(session, item, status="failed", run_id=run.backfill_run_id, error=f"invalid JSON: {exc}")
+        return "failed"
+
+    game_data = payload.get("gameData", {})
+    weather_block = game_data.get("weather")
+    official_date = game_data.get("datetime", {}).get("officialDate")
+    if not weather_block or not official_date:
+        _mark_item(
+            session,
+            item,
+            status="skipped",
+            run_id=run.backfill_run_id,
+            error="no weather block in feed payload",
+        )
+        return "skipped"
+
+    _upsert_historical_weather(
+        session,
+        mlb_game_pk=game_pk,
+        game_date_val=date.fromisoformat(official_date),
+        venue_mlb_id=game_data.get("venue", {}).get("id"),
+        weather_block=weather_block,
+        source_id=source_id,
+        backfill_run_id=run.backfill_run_id,
+        observed_at=datetime.now(UTC),
+    )
+    session.flush()
+    _mark_item(session, item, status="succeeded", run_id=run.backfill_run_id)
+    return "succeeded"
+
+
+def run_weather_backfill(
+    session: Session,
+    client: httpx.Client,
+    config: BackfillConfig,
+    *,
+    resume_run_id: str | None = None,
+) -> BackfillRun:
+    """Enriches every already-backfilled game in `config`'s date range
+    with weather (docs/HISTORICAL_BACKFILL_DESIGN.md's "historical
+    weather... not yet done" item). Iterates the games already on record
+    in `historical_pitcher_starts` -- deliberately not a fresh schedule
+    discovery -- so this only ever touches games this backfill has already
+    confirmed actually happened and reached Final. Safe to call repeatedly:
+    already-succeeded WEATHER_DOMAIN items are skipped, and a prior
+    partial/failed pass is naturally retried on the next call (an existing
+    "failed" or "pending" item is picked back up, never re-created)."""
+    if resume_run_id:
+        run = session.get(BackfillRun, resume_run_id)
+        if run is None:
+            raise ValueError(f"No backfill run found with id {resume_run_id!r}")
+        run.status = "running"
+        session.commit()
+    else:
+        run = BackfillRun(
+            backfill_run_id=_new_backfill_run_id(),
+            requested_start_date=config.start_date,
+            requested_end_date=config.end_date,
+            status="running",
+            source=BACKFILL_SOURCE_NAME,
+            domain=WEATHER_DOMAIN,
+            config={
+                "request_delay_seconds": config.request_delay_seconds,
+                "max_retries": config.max_retries,
+            },
+            code_commit_sha=_current_commit_sha(),
+            adapter_version=BACKFILL_ADAPTER_VERSION,
+        )
+        session.add(run)
+        session.commit()
+
+    source_id = _ensure_backfill_source(session)
+    session.commit()
+
+    game_pks = sorted(
+        set(
+            session.execute(
+                select(HistoricalPitcherStart.mlb_game_pk).where(
+                    HistoricalPitcherStart.game_date >= config.start_date,
+                    HistoricalPitcherStart.game_date <= config.end_date,
+                    HistoricalPitcherStart.game_status == "Final",
+                )
+            ).scalars()
+        )
+    )
+    run.total_work_items = len(game_pks)
+    session.commit()
+
+    for game_pk in game_pks:
+        run.current_cursor = f"weather:game:{game_pk}"
+        outcome = process_weather_for_game(
+            session, client, game_pk=game_pk, source_id=source_id, config=config, run=run
+        )
+        if outcome == "succeeded":
+            run.completed_work_items += 1
+            run.last_success_at = datetime.now(UTC)
+        elif outcome == "skipped":
+            run.skipped_work_items += 1
+        else:
+            run.failed_work_items += 1
+            run.last_error = f"weather for game {game_pk}: see backfill_items.last_error"
+        session.commit()
+
+    run.status = "completed"
+    run.finished_at = datetime.now(UTC)
+    session.commit()
+    return run
 
 
 def run_backfill(

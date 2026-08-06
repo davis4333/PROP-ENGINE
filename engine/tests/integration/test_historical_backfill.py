@@ -39,14 +39,17 @@ from cassandra.db.models.historical import (
     BackfillRun,
     HistoricalLineup,
     HistoricalPitcherStart,
+    HistoricalWeatherObservation,
 )
 from cassandra.db.models.identity import Game, Team, Venue
 from cassandra.historical.backfill import (
     BACKFILL_SOURCE_NAME,
     BackfillConfig,
     _ensure_backfill_source,
+    _parse_weather_block,
     discover_games_for_season,
     process_game_feed,
+    process_weather_for_game,
 )
 
 GAME_A = 900000001
@@ -56,6 +59,7 @@ TEAM_AWAY = 900002
 PITCHER_STARTER_HOME = 900101
 PITCHER_RELIEVER_HOME = 900102
 PITCHER_STARTER_AWAY = 900201
+VENUE_MLB_ID = 999999
 
 
 @pytest.fixture
@@ -72,6 +76,11 @@ def historical_session(db_engine) -> Generator[Session, None, None]:
         )
         session.execute(delete(HistoricalLineup).where(HistoricalLineup.mlb_game_pk.in_(synthetic_pks)))
         session.execute(
+            delete(HistoricalWeatherObservation).where(
+                HistoricalWeatherObservation.mlb_game_pk.in_(synthetic_pks)
+            )
+        )
+        session.execute(
             delete(BackfillItem).where(BackfillItem.work_key.in_([str(pk) for pk in synthetic_pks]))
         )
         session.execute(
@@ -83,7 +92,7 @@ def historical_session(db_engine) -> Generator[Session, None, None]:
         session.execute(delete(BackfillRun).where(BackfillRun.domain == "test"))
         session.execute(delete(Game).where(Game.mlb_game_pk.in_(synthetic_pks)))
         session.execute(delete(Team).where(Team.mlb_team_id.in_([TEAM_HOME, TEAM_AWAY])))
-        session.execute(delete(Venue).where(Venue.mlb_venue_id == 999999))
+        session.execute(delete(Venue).where(Venue.mlb_venue_id == VENUE_MLB_ID))
         session.commit()
         session.close()
 
@@ -94,12 +103,19 @@ def _feed_payload(
     status: str = "Final",
     official_date: str = "2023-04-03",
     detailed_state: str = "Final",
+    weather: dict | None | object = "__default__",
 ) -> dict:
+    game_data: dict = {
+        "status": {"abstractGameState": status, "detailedState": detailed_state},
+        "datetime": {"officialDate": official_date},
+        "venue": {"id": VENUE_MLB_ID},
+    }
+    if weather == "__default__":
+        game_data["weather"] = {"condition": "Clear", "temp": "72", "wind": "5 mph, Out To CF"}
+    elif weather is not None:
+        game_data["weather"] = weather
     return {
-        "gameData": {
-            "status": {"abstractGameState": status, "detailedState": detailed_state},
-            "datetime": {"officialDate": official_date},
-        },
+        "gameData": game_data,
         "liveData": {
             "boxscore": {
                 "teams": {
@@ -335,6 +351,131 @@ def test_process_game_feed_normalizes_lineups(historical_session):
     assert home_leadoff.position == "CF"
     assert home_leadoff.team_mlb_id == TEAM_HOME
     assert home_leadoff.capture_mode == "HISTORICAL_ACTUAL"
+
+
+# --- weather (Phase 4) ----------------------------------------------------
+
+
+def test_parse_weather_block_extracts_temp_and_wind():
+    condition, temp_f, wind_mph, wind_detail = _parse_weather_block(
+        {"condition": "Partly Cloudy", "temp": "79", "wind": "3 mph, R To L"}
+    )
+    assert condition == "Partly Cloudy"
+    assert temp_f == 79.0
+    assert wind_mph == 3.0
+    assert wind_detail == "R To L"
+
+
+def test_parse_weather_block_handles_a_dome_with_zero_wind():
+    condition, temp_f, wind_mph, wind_detail = _parse_weather_block(
+        {"condition": "Dome", "temp": "72", "wind": "0 mph, None"}
+    )
+    assert condition == "Dome"
+    assert temp_f == 72.0
+    assert wind_mph == 0.0
+    assert wind_detail == "None"
+
+
+def test_parse_weather_block_never_raises_on_malformed_fields():
+    condition, temp_f, wind_mph, wind_detail = _parse_weather_block(
+        {"condition": None, "temp": "not-a-number", "wind": "gusty"}
+    )
+    assert condition is None
+    assert temp_f is None
+    assert wind_mph is None
+    assert wind_detail is None
+
+
+@respx.mock
+def test_process_game_feed_captures_weather_from_the_already_fetched_payload(historical_session):
+    """process_game_feed doesn't just fetch pitching/lineup data -- the
+    same feed payload it already has in hand also carries gameData.weather
+    and gameData.venue, so a NEW game backfilled after this feature
+    shipped gets weather for free, no extra fetch needed."""
+    respx.get(LIVE_FEED_URL_A).mock(return_value=httpx.Response(200, json=_feed_payload(game_pk=GAME_A)))
+    run = _run(historical_session)
+
+    process_game_feed(
+        historical_session,
+        httpx.Client(),
+        game_pk=GAME_A,
+        source_id=BACKFILL_SOURCE_NAME,
+        config=_config(),
+        run=run,
+    )
+
+    weather = historical_session.execute(
+        select(HistoricalWeatherObservation).where(HistoricalWeatherObservation.mlb_game_pk == GAME_A)
+    ).scalar_one()
+    assert weather.venue_mlb_id == VENUE_MLB_ID
+    assert weather.condition == "Clear"
+    assert weather.temp_f == 72.0
+    assert weather.wind_mph == 5.0
+    assert weather.capture_mode == "HISTORICAL_ACTUAL"
+
+
+@respx.mock
+def test_process_weather_for_game_enriches_a_game_already_backfilled_without_weather(historical_session):
+    """The dedicated weather-enrichment pass: re-fetches the same feed URL
+    specifically to backfill weather for a game whose pitcher/lineup data
+    was already captured by an earlier process_game_feed pass (before this
+    feature existed) -- proving the two domains (game_feed, weather) are
+    tracked and resumable independently."""
+    respx.get(LIVE_FEED_URL_A).mock(return_value=httpx.Response(200, json=_feed_payload(game_pk=GAME_A)))
+    run = _run(historical_session)
+
+    outcome = process_weather_for_game(
+        historical_session,
+        httpx.Client(),
+        game_pk=GAME_A,
+        source_id=BACKFILL_SOURCE_NAME,
+        config=_config(),
+        run=run,
+    )
+    assert outcome == "succeeded"
+
+    weather = historical_session.execute(
+        select(HistoricalWeatherObservation).where(HistoricalWeatherObservation.mlb_game_pk == GAME_A)
+    ).scalar_one()
+    assert weather.temp_f == 72.0
+
+    # Idempotent: a second call against the same WEATHER_DOMAIN item is a
+    # no-op that doesn't re-fetch (route call count stays at 1).
+    outcome_again = process_weather_for_game(
+        historical_session,
+        httpx.Client(),
+        game_pk=GAME_A,
+        source_id=BACKFILL_SOURCE_NAME,
+        config=_config(),
+        run=run,
+    )
+    assert outcome_again == "succeeded"
+    assert respx.get(LIVE_FEED_URL_A).call_count == 1
+
+
+@respx.mock
+def test_process_weather_for_game_skips_when_feed_has_no_weather_block(historical_session):
+    respx.get(LIVE_FEED_URL_A).mock(
+        return_value=httpx.Response(200, json=_feed_payload(game_pk=GAME_A, weather=None))
+    )
+    run = _run(historical_session)
+
+    outcome = process_weather_for_game(
+        historical_session,
+        httpx.Client(),
+        game_pk=GAME_A,
+        source_id=BACKFILL_SOURCE_NAME,
+        config=_config(),
+        run=run,
+    )
+    assert outcome == "skipped"
+
+    assert (
+        historical_session.execute(
+            select(HistoricalWeatherObservation).where(HistoricalWeatherObservation.mlb_game_pk == GAME_A)
+        ).scalar_one_or_none()
+        is None
+    )
 
 
 # --- idempotency / duplicate prevention / resumability -------------------
@@ -710,14 +851,17 @@ def test_live_pit_pipeline_never_references_historical_reconstruction_tables(mod
     weaken the live as-of pipeline. The strongest version of that
     guarantee here is structural, not just a design intent -- these
     modules must not even reference HistoricalPitcherStart/
-    HistoricalLineup at all, so there is no code path by which a
-    backfilled row (whose ingested_at is real backfill-time, not the
-    historical date it describes) could reach a live decision."""
+    HistoricalLineup/HistoricalWeatherObservation at all, so there is no
+    code path by which a backfilled row (whose ingested_at is real
+    backfill-time, not the historical date it describes) could reach a
+    live decision."""
     referenced = _referenced_names(module)
     assert "HistoricalPitcherStart" not in referenced
     assert "HistoricalLineup" not in referenced
+    assert "HistoricalWeatherObservation" not in referenced
     assert "historical_pitcher_starts" not in referenced
     assert "historical_lineups" not in referenced
+    assert "historical_weather_observations" not in referenced
 
 
 def test_historical_backfill_module_never_imports_the_live_asof_gate():

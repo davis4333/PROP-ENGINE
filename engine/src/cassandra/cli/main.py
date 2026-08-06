@@ -21,7 +21,12 @@ from sqlalchemy import select
 from cassandra.config import operating_tz
 from cassandra.db.models.historical import BackfillRun
 from cassandra.db.session import session_scope
-from cassandra.historical.backfill import BackfillConfig, retry_failed_items, run_backfill
+from cassandra.historical.backfill import (
+    BackfillConfig,
+    retry_failed_items,
+    run_backfill,
+    run_weather_backfill,
+)
 from cassandra.historical.coverage import coverage_report, format_coverage_report
 from cassandra.historical.dataset_builder import (
     DEFAULT_OUTPUT_DIR,
@@ -255,7 +260,9 @@ def backfill_status_cmd(
             runs = [run] if run else []
         else:
             runs = list(
-                session.execute(select(BackfillRun).order_by(BackfillRun.started_at.desc()).limit(5)).scalars()
+                session.execute(
+                    select(BackfillRun).order_by(BackfillRun.started_at.desc()).limit(5)
+                ).scalars()
             )
 
     if not runs:
@@ -297,6 +304,87 @@ def backfill_status_cmd(
         )
         if r.last_error:
             typer.echo(f"  last_error: {r.last_error}")
+
+
+@app.command(name="backfill-weather")
+def backfill_weather_cmd(
+    start_date: str = typer.Option(None, "--start-date", help="YYYY-MM-DD. Defaults to 2023-01-01."),
+    end_date: str = typer.Option(
+        None, "--end-date", help="YYYY-MM-DD, or omit for the current date in America/New_York."
+    ),
+    resume: bool = typer.Option(
+        True,
+        "--resume/--no-resume",
+        help="Continue the latest incomplete weather-backfill run for this exact date range instead of "
+        "starting a new BackfillRun row.",
+    ),
+    request_delay: float = typer.Option(0.25, "--request-delay", help="Seconds to sleep between requests."),
+    max_retries: int = typer.Option(5, "--max-retries"),
+    json_summary: bool = typer.Option(False, "--json", help="Print a machine-readable JSON summary."),
+) -> None:
+    """Enrich already-backfilled games (from `backfill-mlb`) with weather --
+    a separate pass (docs/HISTORICAL_BACKFILL_DESIGN.md's weather item),
+    since the original backfill's game-feed fetches didn't retain
+    `gameData.weather`. A NEW game backfilled after this feature shipped
+    picks up weather automatically on its first `backfill-mlb` pass; this
+    command is for enriching games backfilled before that. Resumable and
+    idempotent, same as `backfill-mlb`."""
+    start = _parse_date(start_date) if start_date else date(2023, 1, 1)
+    end = _parse_date(end_date) if end_date else _today_ny()
+
+    config = BackfillConfig(
+        start_date=start, end_date=end, request_delay_seconds=request_delay, max_retries=max_retries
+    )
+
+    resume_run_id: str | None = None
+    if resume:
+        with session_scope() as session:
+            existing = (
+                session.execute(
+                    select(BackfillRun)
+                    .where(
+                        BackfillRun.domain == "weather",
+                        BackfillRun.requested_start_date == start,
+                        BackfillRun.requested_end_date == end,
+                        BackfillRun.status.in_(["running", "failed", "paused"]),
+                    )
+                    .order_by(BackfillRun.started_at.desc())
+                )
+                .scalars()
+                .first()
+            )
+            resume_run_id = existing.backfill_run_id if existing else None
+
+    with session_scope() as session, httpx.Client(timeout=15.0) as client:
+        run = run_weather_backfill(session, client, config, resume_run_id=resume_run_id)
+
+    if json_summary:
+        typer.echo(
+            json_module.dumps(
+                {
+                    "backfill_run_id": run.backfill_run_id,
+                    "status": run.status,
+                    "requested_start_date": run.requested_start_date.isoformat(),
+                    "requested_end_date": run.requested_end_date.isoformat(),
+                    "total_work_items": run.total_work_items,
+                    "completed_work_items": run.completed_work_items,
+                    "failed_work_items": run.failed_work_items,
+                    "skipped_work_items": run.skipped_work_items,
+                }
+            )
+        )
+    else:
+        typer.echo(f"backfill_run_id={run.backfill_run_id} status={run.status}")
+        typer.echo(
+            f"  total={run.total_work_items} completed={run.completed_work_items} "
+            f"failed={run.failed_work_items} skipped={run.skipped_work_items}"
+        )
+        if run.last_error:
+            typer.echo(f"  last_error: {run.last_error}")
+        typer.echo(f"  to resume: cassandra backfill-weather --start-date {start} --end-date {end} --resume")
+
+    if run.failed_work_items:
+        raise typer.Exit(code=1)
 
 
 @app.command(name="retry-backfill-failures")

@@ -54,14 +54,28 @@ starts-used), `recent_k_rate` (+ tier, starts-used), `rest_days`,
 (`availability.eligible_prior_starts`), reusing
 `features/expected_bf.py`/`features/builders.py`'s exact pure functions
 via a small duck-typed adapter (`dataset_builder._PriorStartShim`), not a
-reimplementation. **Not yet available** (see every manifest's
-`excluded_feature_groups`, always populated, never silently omitted):
-pitch-mix, velocity, CSW rate (needs pitch-level data, Phase A item 6,
-not collected), park factor (Phase A item 8, not implemented), weather
-(Phase A item 7, not implemented), opponent rolling strikeout context
-(Phase A item 10, not implemented), lineup features, umpire,
-pitcher handedness (identity resolution for historical players hasn't
-run in this pass — see `CURRENT_STATE_AUDIT.md`).
+reimplementation. Also `park_k_factor`/`park_factor_available` (Phase 4 —
+`historical/park_factors.py`'s point-in-time-safe `ParkFactorAccumulator`,
+computed from prior completed games at the same venue, not a static
+table) and `weather_adjustment`/`weather_available`/`weather_source`
+(Phase 4 — MLB's own `gameData.weather` block, captured from the same
+feed payload the backfill already fetches, via `features/builders.py`'s
+`compute_weather_adjustment` against a `WeatherLike`-shaped shim).
+**`weather_source` is always `"actual"` when weather is available, never
+omitted** — flagged per-row deliberately (independent point-in-time-
+auditor finding): this is MLB's own realized weather from the completed
+game, not the FORECAST the live pipeline actually has access to pregame
+(`adapters/weather_openmeteo.py`). Not a leakage bug (still that same
+game's own weather, no cutoff violated), but a real information-quality
+gap — a model trained on this feature sees cleaner input than production
+ever gives it, so a training-vs-live gap attributable to weather should
+not be surprising until a forecast-based historical source exists. **Not
+yet available** (see every manifest's `excluded_feature_groups`, always
+populated, never silently omitted): pitch-mix, velocity, CSW rate (needs
+pitch-level data, not collected), opponent rolling strikeout context (not
+collected), lineup features, umpire, pitcher handedness (identity
+resolution for historical players hasn't run in this pass — see
+`CURRENT_STATE_AUDIT.md`).
 
 ### Target
 

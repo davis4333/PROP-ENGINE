@@ -85,6 +85,26 @@ player_mlb_id)`.
 | `capture_mode` | string | Always `HISTORICAL_ACTUAL` — this is the game's real, final lineup, not a pregame-known one. There is no trustworthy pregame-availability timestamp for this in the free MLB Stats API, so a strict live-compatible training feature set must exclude it (see the availability policy doc) unless that changes. |
 | `source_id`, `backfill_run_id`, `observed_at`, `ingested_at`, `payload` | | Same meaning as above |
 
+## `historical_weather_observations` (Phase 4)
+
+One row per game's actual observed weather. Unique on `mlb_game_pk`.
+Sourced from the same `feed/live` payload `historical_pitcher_starts`/
+`historical_lineups` are built from (`gameData.weather`/`gameData.venue`)
+-- ground truth for that specific game, not a nearby-station archive
+approximation. Dome/retractable-roof venues report MLB's own `condition`
+value as-is (e.g. `"Dome"`, `"Roof Closed"`).
+
+| Column | Type | Notes |
+|---|---|---|
+| `mlb_game_pk`, `game_date` | | |
+| `venue_mlb_id` | int, nullable | Raw MLB venue id from `gameData.venue.id` |
+| `condition` | string, nullable | MLB's free-text condition, e.g. `"Partly Cloudy"`, `"Dome"` |
+| `temp_f` | numeric, nullable | Parsed from `gameData.weather.temp` |
+| `wind_mph` | numeric, nullable | Parsed from the leading number in `gameData.weather.wind` |
+| `wind_detail` | string, nullable | The direction/description portion of `gameData.weather.wind` (e.g. `"R To L"`) |
+| `capture_mode` | string | Always `HISTORICAL_ACTUAL` |
+| `source_id`, `backfill_run_id`, `observed_at`, `ingested_at`, `payload` | | Same meaning as above |
+
 ## `games` (existing table, two columns added this pass)
 
 | Column | Type | Notes |

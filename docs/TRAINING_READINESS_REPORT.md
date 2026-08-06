@@ -101,11 +101,16 @@ caveats on that result.
 
 1. **Reduced feature set only.** Both models see the same 3 real
    predictors (`expected_bf`, `recent_k_rate`, `rest_days`) — no park
-   factor, weather, opponent context, or pitch-level detail (Phase A
-   items 6-10, not yet backfilled). The relative comparison is fair (both
-   models are equally blind to the missing groups), but neither number
-   represents what either model could do with the full feature set the
-   product spec calls for.
+   factor, weather, opponent context, or pitch-level detail. This result
+   predates Phase 4 (historical weather + computed park factors,
+   `docs/HISTORICAL_BACKFILL_DESIGN.md`); a dataset built after that work
+   now carries real `park_k_factor`/`weather_adjustment` values, but
+   `historical/challenger_poisson.py`'s predictor set hasn't been
+   extended to use them yet (a deliberate, separate modeling decision —
+   see "What's still not built" below), so this specific comparison is
+   still apples-to-apples between the two models, just not yet
+   informed by the fuller feature set now available. Opponent context and
+   pitch-level detail remain genuinely uncollected.
 2. **One fold count, one challenger family.** The ~2.7% MAE improvement
    replicated once as the dataset grew from 9,718 to 14,578 rows (same
    result, same direction, same rough magnitude), which is more than a
@@ -143,11 +148,19 @@ caveats on that result.
    lists negative-binomial as an alternative worth trying (Poisson
    assumes variance equals the mean, which real strikeout counts may not
    satisfy exactly).
-4. **Weather/park-factor/opponent-context backfill** (Phase A items
-   6-10) — once collected, rebuild datasets with those groups populated
-   and re-run both `evaluate-baseline` and
-   `train-walk-forward-challenger` to see whether the ~2.7% gap widens,
-   narrows, or reverses with richer features.
+4. **Weather/park-factor are now collected (Phase 4); the challenger
+   doesn't use them yet.** `historical/park_factors.py` and
+   `HistoricalWeatherObservation` are real and wired into
+   `historical/dataset_builder.py` — a freshly-built dataset's rows carry
+   real `park_k_factor`/`park_factor_available`/`weather_adjustment`/
+   `weather_available` values. `historical/challenger_poisson.py`'s
+   `_design_row` still trains on the same reduced set
+   (`expected_bf`/`recent_k_rate`/`rest_days`) it always has — extending
+   it to include the two new fields and re-running both
+   `evaluate-baseline` and `train-walk-forward-challenger` to see whether
+   the ~2.7% gap widens, narrows, or reverses is the natural next step,
+   not yet done. Opponent-context and pitch-level detail remain
+   uncollected.
 5. **Historical market-line hit rate** stays labeled "unavailable" unless
    genuine historical lines are imported separately (out of scope per the
    mission directive itself — a count model trains on actual strikeout

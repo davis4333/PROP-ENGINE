@@ -9,9 +9,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
-from cassandra.db.models.raw import RawWeatherObservation
 from cassandra.features.expected_bf import (
     DECAY_HALF_LIFE_STARTS,
     MIN_STARTS_FOR_RECENT,
@@ -28,6 +27,20 @@ LEAGUE_AVG_K_RATE = 0.22  # ~22% K/BF, illustrative -- see CURRENT_STATE_AUDIT.m
 # Reserved seam for a future opponent-lineup-contact-rate adjustment --
 # see features/registry.py's opponent_adjustment entry.
 NEUTRAL_OPPONENT_ADJUSTMENT = 1.00
+
+
+@runtime_checkable
+class WeatherLike(Protocol):
+    """Structural contract `compute_weather_adjustment` actually needs --
+    satisfied by `RawWeatherObservation` (the live pipeline's input) and by
+    `historical/dataset_builder.py`'s weather shim (the historical
+    training-dataset builder's input), same reasoning as
+    `expected_bf.py`'s `GameLogLike`: one shared computation, no risk of
+    the historical dataset's weather adjustment silently drifting from
+    what the live pipeline actually computes."""
+
+    @property
+    def temp_f(self) -> float | None: ...
 
 
 @dataclass(frozen=True)
@@ -55,7 +68,7 @@ def compute_recent_k_rate(game_logs_latest_first: Sequence[GameLogLike]) -> KRat
     return KRateResult(value=LEAGUE_AVG_K_RATE, tier="league_default", starts_used=0)
 
 
-def compute_weather_adjustment(weather: RawWeatherObservation | None) -> float:
+def compute_weather_adjustment(weather: WeatherLike | None) -> float:
     """A small, bounded, illustrative adjustment -- not a calibrated
     model. Cold weather (thicker air, less carry) is treated as a mild
     boost to strikeout likelihood; hot weather a mild reduction. See

@@ -68,6 +68,21 @@ hasn't reached `Final` yet) — those resolve automatically the next time
 `backfill-mlb` walks the same date range, once the game has actually
 finished.
 
+## Backfill weather
+
+```bash
+.venv/bin/python -m cassandra.cli.main backfill-weather --start-date 2023-01-01
+```
+
+Enriches already-backfilled games (from `backfill-mlb`) with real weather
+(`docs/HISTORICAL_BACKFILL_DESIGN.md`'s Phase 4) -- MLB's own
+`gameData.weather`/`gameData.venue` from the same feed payload, re-fetched
+specifically for this field since the original `backfill-mlb` pass
+discarded it. A game backfilled AFTER this feature shipped picks up
+weather automatically on its first `backfill-mlb` pass and never needs
+this command. Resumable/idempotent the same way, its own `weather`
+`BackfillItem` domain tracked independently of `game_feed`.
+
 ## Audit coverage
 
 ```bash
@@ -95,9 +110,13 @@ gets a chance to update to `completed`/`failed`), which is exactly what
 
 ## Build the training dataset
 
-**Not yet implemented.** `cassandra build-training-dataset` does not
-exist yet — see `TRAINING_DATASET_SPEC.md` and
-`TRAINING_READINESS_REPORT.md` for what's designed versus built.
+```bash
+.venv/bin/python -m cassandra.cli.main build-training-dataset --seasons 2023,2024,2025
+```
+
+Implemented — see `TRAINING_DATASET_SPEC.md` for the row schema and
+`TRAINING_READINESS_REPORT.md` for the walk-forward baseline-vs-challenger
+results this has already produced.
 
 ## Where data is stored
 

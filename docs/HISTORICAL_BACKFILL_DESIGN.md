@@ -1,12 +1,15 @@
 # Historical Backfill — Design
 
-Status: **implemented and running** for the core data domains listed
-below (schedule/games, actual starters, pitcher outcomes, lineups).
-**Not yet implemented**: pitch-level detail, historical weather, computed
-park factors, rest/workload features, opponent rolling context, the
-training-dataset builder, and model training/evaluation. See
+Status: **implemented and complete** for the core data domains
+(schedule/games, actual starters, pitcher outcomes, lineups) across the
+full 2023-present window, plus **historical weather** and **computed park
+factors** (Phase 4, this section updated accordingly). The
+STRICT_LIVE_COMPATIBLE training-dataset builder and baseline/challenger
+walk-forward evaluation are also implemented and have run against the
+complete dataset. **Still not implemented**: pitch-level detail,
+rest/workload features beyond `rest_days`, opponent rolling context. See
 `CURRENT_STATE_AUDIT.md` for the authoritative up-to-date status and
-`TRAINING_READINESS_REPORT.md` for why training hasn't started yet.
+`TRAINING_READINESS_REPORT.md` for training results.
 
 ## Why a separate subsystem, not an extension of the live pipeline
 
@@ -133,7 +136,53 @@ genuine correction pass) can never produce two rows for the same
   over a thousand avoidable calls; one range call per season is
   typically 4-5 calls total for the full 2023-present window.
 
-## What's explicitly out of scope for this pass
+## Historical weather (Phase 4, implemented)
+
+Unlike the live pipeline (which calls Open-Meteo separately), historical
+weather turned out to need no new external fetch at all: MLB's own
+`feed/live` payload -- the SAME response `process_game_feed` already
+fetches per game -- carries a `gameData.weather` block (`condition`,
+`temp`, `wind`) and `gameData.venue.id`, ground truth for that specific
+game (including dome/retractable-roof venues, which report MLB's own
+condition value, e.g. `"Dome"`, as-is). The original backfill pass
+discarded this field; `historical/backfill.py`'s `process_game_feed` now
+captures it directly into `historical_weather_observations`
+(`db/models/historical.py`'s `HistoricalWeatherObservation`) on every new
+game, and a dedicated `process_weather_for_game`/`run_weather_backfill`
+pass (`cassandra backfill-weather`) re-fetches the same feed URL to
+enrich games backfilled before this feature existed. `features/builders.py`'s
+`compute_weather_adjustment` (the exact function the live pipeline calls)
+now accepts a `WeatherLike` Protocol rather than the live-only
+`RawWeatherObservation` class, so `historical/dataset_builder.py` reuses
+the identical adjustment logic instead of a parallel copy.
+
+**Actual, not forecast (flagged, not silently equivalent to live).**
+This is MLB's own realized/ACTUAL weather from the completed game --
+strictly more accurate than the live pipeline's own weather feature
+(`adapters/weather_openmeteo.py`), which is a pregame FORECAST that can
+simply be wrong. Not a leakage bug (never a future game, no cutoff
+violated), but a real training-vs-production information-quality gap --
+every dataset row carries `weather_source: "actual"` when weather is
+available (never omitted) so this is checkable, not assumed. See
+`TRAINING_DATASET_SPEC.md`.
+
+## Park factors (Phase 4, implemented)
+
+Computed from prior completed games at each venue, not a static table --
+`historical/park_factors.py`'s `ParkFactorAccumulator` walks
+`historical_pitcher_starts` in chronological order (a single forward pass,
+not a query per row) and reports `venue K-rate ÷ league K-rate` (clipped
+to `models/baseline.py`'s `PARK_ADJ_BOUNDS`), available only once a venue
+has at least `MIN_BATTERS_FACED_FOR_PARK_FACTOR` (400) batters faced in
+its own STRICTLY PRIOR history -- below that, it honestly reports
+unavailable rather than a noisy early estimate. Point-in-time-safe by
+construction: `historical/dataset_builder.py` calls `park_factor_for()`
+for a row BEFORE `record_outcome()` for that same row, so a game's own
+outcome (or any later game's) can never influence its own factor --
+verified by `tests/unit/test_park_factors.py` and a dedicated leakage test
+in `tests/integration/test_dataset_builder.py`.
+
+## What's still explicitly out of scope
 
 Reported honestly here and in `audit-historical-coverage`'s output, not
 silently omitted:
@@ -141,16 +190,8 @@ silently omitted:
 - Pitch-level / plate-appearance detail (velocity, pitch type, CSW rate,
   etc.) — would need a new, much larger schema (a pitch-events table) and
   careful storage-size management; deferred.
-- Historical weather (actual or forecast-reconstructed) — needs the full
-  30-venue coordinate registry (already built for the live pipeline,
-  `orchestration/run_slate.py`'s `VENUE_COORDINATES`) wired into a
-  historical weather-archive fetch; not yet done for this backfill.
-- Park factors calculated from prior completed games (rather than the
-  live pipeline's small static table) — designed, not implemented.
 - Rest/workload and opponent rolling-context derived features — designed
   (see `HISTORICAL_AVAILABILITY_POLICY.md`), not implemented.
-- The training-dataset builder, model training, and walk-forward
-  evaluation — blocked on the above; see `TRAINING_READINESS_REPORT.md`.
 - Historical market lines — explicitly out of scope per the mission
   directive itself: a pitcher-strikeout **count model** trains on actual
   strikeout outcomes, not on market lines. Betting-decision evaluation

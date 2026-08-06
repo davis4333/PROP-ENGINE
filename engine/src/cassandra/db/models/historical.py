@@ -215,3 +215,45 @@ class HistoricalLineup(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class HistoricalWeatherObservation(Base):
+    """One game's actual observed weather condition/temperature/wind, from
+    the SAME MLB live-feed payload `historical/backfill.py`'s
+    `process_game_feed` already fetches per game (`gameData.weather`) --
+    ground truth for that specific game (what MLB itself recorded at that
+    park that day), not a nearby-station archive approximation reconstructed
+    after the fact. Dome/retractable-roof venues report MLB's own condition
+    value as-is (e.g. "Dome", "Roof Closed") rather than a synthesized
+    outdoor reading -- `features/builders.py`'s `compute_weather_adjustment`
+    already falls back to neutral on a non-numeric/missing `temp_f`, so no
+    special-casing is needed here.
+
+    The original backfill pass (docs/HISTORICAL_BACKFILL_DESIGN.md) only
+    kept the pitching/lineup blocks of each feed payload, discarding the
+    top-level `gameData.weather` it had already fetched. This table
+    captures that same already-fetched field going forward
+    (`process_game_feed` now upserts it directly) and backfills it for
+    already-processed games via a dedicated `process_weather_for_game`
+    pass that re-fetches the same feed URL specifically for this field.
+    """
+
+    __tablename__ = "historical_weather_observations"
+    __table_args__ = (Index("ix_historical_weather_observations_game_date", "game_date"),)
+
+    historical_weather_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    mlb_game_pk: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    game_date: Mapped[date] = mapped_column(Date, nullable=False)
+    venue_mlb_id: Mapped[int | None] = mapped_column(Integer)
+    condition: Mapped[str | None] = mapped_column(String)
+    temp_f: Mapped[float | None] = mapped_column(Numeric)
+    wind_mph: Mapped[float | None] = mapped_column(Numeric)
+    wind_detail: Mapped[str | None] = mapped_column(String)
+    capture_mode: Mapped[str] = mapped_column(String, nullable=False, default=CAPTURE_MODE_HISTORICAL_ACTUAL)
+    source_id: Mapped[str] = mapped_column(String, ForeignKey("sources.source_id"), nullable=False)
+    backfill_run_id: Mapped[str | None] = mapped_column(String, ForeignKey("backfill_runs.backfill_run_id"))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)

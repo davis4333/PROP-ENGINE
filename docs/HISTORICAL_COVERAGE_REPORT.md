@@ -126,10 +126,11 @@ baseline on every one of 7 folds. See
 ## Not yet covered (unchanged from the design doc, repeated here per the
 mission directive's explicit reporting requirement)
 
-Pitch-level/plate-appearance detail, historical weather, park factors
-computed from prior games, rest/workload derived features, opponent
-rolling strikeout context, historical market lines (explicitly out of
-scope for this phase).
+Pitch-level/plate-appearance detail, rest/workload derived features
+beyond `rest_days`, opponent rolling strikeout context, historical market
+lines (explicitly out of scope for this phase). Historical weather and
+computed park factors are now implemented (Phase 4, see
+`HISTORICAL_BACKFILL_DESIGN.md`) — no longer in this list.
 
 ## How to get current numbers
 
