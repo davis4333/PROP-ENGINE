@@ -9,6 +9,7 @@ alter how timestamps are stored, compared, or filtered.
 
 from __future__ import annotations
 
+import os
 import subprocess  # nosec B404 -- only used below with a fixed argv, no shell
 from datetime import date, datetime
 from functools import lru_cache
@@ -51,6 +52,13 @@ class Settings(BaseSettings):
     # ADR 0011 -- demo-only auth, not production-ready.
     admin_shared_secret: str = "change-me-dev-only"
 
+    # Explicit override for "is this a real production deployment" --
+    # see is_production_environment() below. Most deployments shouldn't
+    # need to set this: Replit's own REPLIT_DEPLOYMENT env var (present
+    # only on a published deployment, never the interactive workspace or
+    # local/CI runs) is detected automatically.
+    production_mode: bool = False
+
     # orchestration/scheduler.py -- a long-running deployment (e.g. Replit)
     # populates Today and grades recent slates on its own rather than
     # requiring a human to run the CLI by hand every day. Off by default
@@ -86,6 +94,41 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Exact known placeholder/example values (from .env.example, this file's
+# own default, and common generic defaults) -- checked case-insensitively.
+# Not exhaustive by design: this catches values nobody could have chosen
+# on purpose, not a strength policy. Combined with a minimum-length floor
+# below to also catch short guessable secrets that aren't on this list.
+_WEAK_ADMIN_SECRETS = {
+    "",
+    "test",
+    "change-me-dev-only",
+    "changeme",
+    "change-me",
+    "admin",
+    "password",
+    "secret",
+}
+_MIN_ADMIN_SECRET_LENGTH = 16
+
+
+def is_production_environment() -> bool:
+    """True for a real deployment (Phase 8's "production startup must
+    reject weak secrets" gate), false for local/dev/CI. Prefers an
+    explicit settings.production_mode override; otherwise detects
+    Replit's own REPLIT_DEPLOYMENT env var, which Replit sets only on a
+    published deployment -- never the interactive workspace, `docker-
+    compose up`, or a test run."""
+    return settings.production_mode or bool(os.environ.get("REPLIT_DEPLOYMENT"))
+
+
+def admin_secret_is_weak(secret: str) -> bool:
+    """Used both at startup (crash before serving traffic) and available
+    for the Admin page to warn about, per Phase 8. Deliberately a
+    standalone predicate rather than inlined so both call sites -- and
+    tests -- share exactly one definition of "weak"."""
+    return secret.strip().lower() in _WEAK_ADMIN_SECRETS or len(secret) < _MIN_ADMIN_SECRET_LENGTH
 
 
 @lru_cache(maxsize=1)

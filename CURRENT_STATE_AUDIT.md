@@ -395,6 +395,16 @@ to invent missing product decisions:
   IP for 5 minutes) since there was previously no rate limiting at all
   over what may be a weak/guessable secret. A floor under the placeholder,
   not a fix for it being a placeholder — real auth is still unbuilt.
+  **New**: `api/main.py`'s startup now refuses to boot at all in a real
+  deployment (`REPLIT_DEPLOYMENT` env var present, or
+  `PRODUCTION_MODE=true`) if `ADMIN_SHARED_SECRET` is missing, a known
+  placeholder (`test`, `change-me-dev-only`, etc.), or under 16
+  characters (`config.py`'s `admin_secret_is_weak`). **Action required
+  before this deploys**: the live site's `ADMIN_SHARED_SECRET` is
+  currently the placeholder value used for verification during this
+  build — it must be rotated to a real, unique, high-entropy secret
+  (e.g. `openssl rand -hex 32`) in Replit Secrets *before* pulling this
+  change, or the next deploy will refuse to start by design.
 - **Admin actions**: only `run` and `grade` are implemented. ADR 0007
   describes a richer revalidate/regenerate/publish state-guard split;
   that ADR's own status note marks it "Not yet implemented," deferred
