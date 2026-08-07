@@ -561,10 +561,61 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   -- verified with real browser screenshots (Playwright), not just the
   automated test suite, in both the active-challenger and
   baseline-fallback states.
+- **Phase 5 -- the self-learning loop, human-gated (real, wired in)**:
+  `orchestration/retraining_scheduler.py` is a second, independent
+  background scheduler (its own thread, its own advisory-lock key --
+  never shares `orchestration/scheduler.py`'s daily run_slate()/
+  grade_slate_run() cadence, since a retrain attempt is far heavier/
+  slower). Off by default (`AUTO_RETRAIN_ENABLED=false`); when enabled,
+  on a DB-derived cadence (`RETRAIN_INTERVAL_DAYS`, default weekly, read
+  from the latest `retrain_attempted` `audit_events` row so a restart
+  never causes a redundant attempt) it: backfills the trailing
+  `RETRAIN_BACKFILL_LOOKBACK_DAYS` of newly-completed games, rebuilds the
+  training dataset, runs a real out-of-sample walk-forward comparison
+  against the current baseline, and -- **only if the challenger's
+  aggregate walk-forward MAE genuinely beats the baseline's** -- fits and
+  registers a new `CANDIDATE` artifact. Every attempt (successful,
+  skipped, or errored) is durably logged to `audit_events`, so cadence
+  gating and an operator's own audit trail both work even when nothing
+  gets registered. **It never calls `promote_to_active` or
+  `rollback_active`** -- a real, checked guarantee (a unit test AST-parses
+  the module and asserts neither name is even referenced), not just a
+  docstring claim; a human still has to review and run `cassandra
+  promote-model` (or use the Admin page) to make anything live.
+  Registered but unpromoted candidates surface on the Admin page under a
+  new "Pending Model Candidates" section (`GET /api/admin/status`'s
+  `pending_model_candidates` field) -- verified with a real browser
+  screenshot (Playwright) showing a seeded candidate's metrics/notes
+  rendering correctly. `numpy` (needed for the walk-forward/final-model
+  fitting code this scheduler runs) was already present in the live
+  Replit deployment before this phase (`scripts/replit_start.sh` already
+  installs the `[dev,training]` extras in production), so enabling this
+  requires no new dependency, just the env var.
+- **A real promotion-safety gap found and closed in the same phase**:
+  `cassandra promote-model` previously had no check that a candidate had
+  ever been evaluated out-of-sample -- `train-final-model --register`
+  only ever computes in-sample fit-quality numbers (evaluated against the
+  same rows the model was fit on, optimistic by construction), so nothing
+  stopped promoting a model straight from an in-sample fit with no
+  walk-forward comparison at all.
+  `registry/service.py`'s `promote_to_active()` now requires
+  `training_metrics` to contain real walk-forward comparison keys
+  (`REQUIRED_WALK_FORWARD_METRIC_KEYS`) before it will promote anything;
+  the retraining scheduler's automatic path always supplies them, and
+  `cassandra train-final-model --after-walk-forward-report <path>` is how
+  a human attaches a prior `train-walk-forward-challenger` run's results
+  to a manually-trained artifact. This is a real, deliberate behavior
+  change (existing promotion tests needed updating to attach walk-forward
+  metrics) -- not a hypothetical hardening.
 - **Not yet built**: a shadow-mode runner (evaluating a `CANDIDATE`
   against live slates without its predictions ever reaching
   `projections`/`grades`), negative-binomial/gradient-boosted challenger
-  alternatives. See `docs/TRAINING_READINESS_REPORT.md` for the
+  alternatives, and any automated criteria for *how much* walk-forward
+  improvement should be required before a candidate is even worth a
+  human's review (the scheduler's bar is "beats the baseline at all,"
+  deliberately not a calibrated margin -- a real product decision this
+  build doesn't guess at, same posture as `decision_edge_threshold`).
+  See `docs/TRAINING_READINESS_REPORT.md` for the
   full "what's still not built" list. Also not yet collected/implemented
   (reported honestly, not silently omitted -- every dataset manifest/row
   records these as unavailable, and `audit-historical-coverage` surfaces
@@ -868,13 +919,20 @@ The model artifact + registry system (`db/models/registry.py`,
 pipeline (Phase 4 of `docs/FINAL_COMPLETION_WORKLOG.md`) — a human can
 train, evaluate, register, promote, and roll back a real challenger,
 with `run_slate()` actually serving whichever model is `ACTIVE` and the
-permanent baseline as the structurally-guaranteed fallback. The natural
-next slice from here: a shadow-mode runner that evaluates a `CANDIDATE`
-against live slates without its predictions ever reaching
-`projections`/`grades` (lets a human compare a challenger's real-world
-behavior before promoting it, beyond what backtested walk-forward
-validation already shows), and a second model family
+permanent baseline as the structurally-guaranteed fallback. Phase 5
+(above) closed the actual "self-learning loop" gap on top of that: a
+human-gated automatic scheduler now backfills, retrains, and evaluates
+challengers on its own, registering a `CANDIDATE` only when it beats the
+baseline out-of-sample — still never promoting without an explicit human
+action. The natural next slice from here: a shadow-mode runner that
+evaluates a `CANDIDATE` against live slates without its predictions ever
+reaching `projections`/`grades` (lets a human compare a challenger's
+real-world behavior before promoting it, beyond what backtested
+walk-forward validation already shows), a second model family
 (negative-binomial/gradient-boosted) to actually exercise
-`SUPPORTED_LIVE_MODEL_FAMILIES`' multi-family design. None of this was
-invented here — it's flagged as real, well-scoped future work, not
-guessed at silently.
+`SUPPORTED_LIVE_MODEL_FAMILIES`' multi-family design, and a real
+calibrated bar for how much walk-forward improvement should be required
+before a candidate is worth a human's review (today's scheduler
+threshold is deliberately just "beats the baseline at all"). None of
+this was invented here — it's flagged as real, well-scoped future work,
+not guessed at silently.

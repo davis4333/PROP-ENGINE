@@ -211,6 +211,43 @@ export default function AdminPage() {
             )}
           </section>
 
+          {status.pending_model_candidates.length > 0 && (
+            <section className={styles.section}>
+              <h2 className={styles.sectionTitle}>
+                Pending Model Candidates ({status.pending_model_candidates.length})
+              </h2>
+              <p className={styles.subtitle}>
+                Awaiting review -- registered by a human via <code>train-final-model --register</code>{" "}
+                or automatically by the retraining scheduler. Nothing here is ever promoted without an
+                explicit <code>cassandra promote-model</code> action.
+              </p>
+              <div className={styles.pendingCandidateList}>
+                {status.pending_model_candidates.map((c) => (
+                  <div key={c.artifact_id} className={styles.activeModel}>
+                    <span className={styles.activeModelTitle}>
+                      {c.fitted_model_version}
+                      <span className={styles.pendingCandidateStatus}>{c.status}</span>
+                    </span>
+                    <div className={styles.activeModelMeta}>
+                      <span>family: {c.model_family}</span>
+                      <span>trained: {new Date(c.trained_at).toLocaleString()}</span>
+                      <span>registered by: {c.created_by}</span>
+                    </div>
+                    <div className={styles.activeModelMeta}>
+                      <span>dataset: {c.training_dataset_id}</span>
+                      {Object.entries(c.training_metrics).map(([key, value]) => (
+                        <span key={key}>
+                          {key}: {typeof value === "number" ? value.toFixed(4) : String(value)}
+                        </span>
+                      ))}
+                    </div>
+                    {c.notes && <div className={styles.pendingCandidateNotes}>{c.notes}</div>}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {status.blocking_issues.length > 0 && (
             <section className={styles.section}>
               <h2 className={styles.sectionTitle}>Blocking Issues</h2>

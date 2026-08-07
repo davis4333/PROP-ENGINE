@@ -318,7 +318,12 @@ def test_admin_status_surfaces_the_active_model_when_one_is_promoted(client, db_
         training_row_count=500,
         trained_at=datetime(2026, 8, 1, tzinfo=UTC),
         dependency_versions={},
-        training_metrics={"mae": 1.5, "rmse": 1.9},
+        training_metrics={
+            "mae": 1.5,
+            "rmse": 1.9,
+            "walk_forward_aggregate_baseline_mae": 2.1,
+            "walk_forward_aggregate_challenger_mae": 1.7,
+        },
         evaluation_report_ids=[],
         created_by="tester",
     )
@@ -336,5 +341,69 @@ def test_admin_status_surfaces_the_active_model_when_one_is_promoted(client, db_
     assert body["active_model"]["model_family"] == "poisson-regression"
     assert body["active_model"]["fitted_model_version"] == artifact.fitted_model_version
     assert body["active_model"]["training_dataset_id"] == "ds_admin_test"
-    assert body["active_model"]["training_metrics"] == {"mae": 1.5, "rmse": 1.9}
+    assert body["active_model"]["training_metrics"] == {
+        "mae": 1.5,
+        "rmse": 1.9,
+        "walk_forward_aggregate_baseline_mae": 2.1,
+        "walk_forward_aggregate_challenger_mae": 1.7,
+    }
     assert body["active_model"]["activated_by"] == "tester"
+    # An ACTIVE artifact is not "pending review" -- it's already live.
+    assert body["pending_model_candidates"] == []
+
+
+def test_admin_status_is_empty_pending_candidates_by_default(client):
+    response = client.get("/api/admin/status", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()["pending_model_candidates"] == []
+
+
+def test_admin_status_surfaces_a_registered_but_unpromoted_candidate(client, db_session, monkeypatch):
+    monkeypatch.setattr(admin_router, "get_git_commit_sha", lambda: "deadbeef1234")
+    artifact = create_model_artifact(
+        db_session,
+        model_family="poisson-regression",
+        model_code_version="poisson-regression-challenger-0.1.0",
+        coefficients=[0.5, 0.1, 2.0, -0.02, 0.0],
+        coefficient_order=[
+            "intercept",
+            "log1p_expected_bf",
+            "recent_k_rate",
+            "rest_days",
+            "rest_days_missing",
+        ],
+        preprocessing_rules={},
+        training_dataset_id="ds_pending_test",
+        dataset_builder_version="v1",
+        availability_policy_version="v1",
+        feature_set_version="v1",
+        training_seasons=[2023],
+        training_game_types=["R"],
+        training_row_count=400,
+        trained_at=datetime(2026, 8, 6, tzinfo=UTC),
+        dependency_versions={},
+        training_metrics={
+            "mae": 1.4,
+            "walk_forward_aggregate_baseline_mae": 1.8,
+            "walk_forward_aggregate_challenger_mae": 1.3,
+        },
+        evaluation_report_ids=[],
+        created_by="auto-retrain-scheduler",
+        notes="registered automatically",
+    )
+    register_as_candidate(db_session, artifact_id=artifact.artifact_id, operator="auto-retrain-scheduler")
+    db_session.flush()
+
+    response = client.get("/api/admin/status", headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    # Not promoted -- still the permanent baseline actually serving.
+    assert body["active_model"] is None
+    assert len(body["pending_model_candidates"]) == 1
+    candidate = body["pending_model_candidates"][0]
+    assert candidate["artifact_id"] == artifact.artifact_id
+    assert candidate["status"] == "CANDIDATE"
+    assert candidate["created_by"] == "auto-retrain-scheduler"
+    assert candidate["training_dataset_id"] == "ds_pending_test"
+    assert candidate["notes"] == "registered automatically"

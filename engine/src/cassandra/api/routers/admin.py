@@ -28,6 +28,7 @@ from cassandra.api.schemas import (
     LineImportEntryIn,
     LineImportPreviewResponse,
     MatchedLineImportEntryOut,
+    PendingModelCandidateOut,
     PipelineRunOut,
     PipelineStageOut,
     RunActionResponse,
@@ -42,7 +43,7 @@ from cassandra.decision.engine import DECISION_POLICY_VERSION
 from cassandra.features.builders import FEATURE_SET_VERSION
 from cassandra.ingestion.manual_line_import import LineImportEntry, commit_line_import, preview_line_import
 from cassandra.orchestration.run_slate import grade_slate_run, run_slate
-from cassandra.registry.service import resolve_active_model
+from cassandra.registry.service import current_status, pending_candidates, resolve_active_model
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -148,6 +149,21 @@ def get_admin_status(db: Session = Depends(get_db)) -> AdminStatusResponse:
             activated_by=latest_event.operator,
         )
 
+    pending_candidate_outs = [
+        PendingModelCandidateOut(
+            artifact_id=a.artifact_id,
+            model_family=a.model_family,
+            fitted_model_version=a.fitted_model_version,
+            status=current_status(db, a.artifact_id) or "UNKNOWN",
+            trained_at=a.trained_at,
+            created_by=a.created_by,
+            training_dataset_id=a.training_dataset_id,
+            training_metrics=a.training_metrics,
+            notes=a.notes,
+        )
+        for a in pending_candidates(db)
+    ]
+
     git_commit_sha = get_git_commit_sha()
     if git_commit_sha is None:
         # Phase 2B: a missing deployed commit SHA must be a visible
@@ -177,6 +193,7 @@ def get_admin_status(db: Session = Depends(get_db)) -> AdminStatusResponse:
         decision_edge_threshold=settings.decision_edge_threshold,
         git_commit_sha=git_commit_sha,
         active_model=active_model_out,
+        pending_model_candidates=pending_candidate_outs,
         blocking_issues=blocking_issues,
     )
 

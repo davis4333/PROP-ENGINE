@@ -54,7 +54,7 @@ from cassandra.models.baseline import BaselinePoissonModel
 from cassandra.models.interface import StrikeoutModel
 from cassandra.models.poisson_regression import PoissonRegressionModel
 
-REGISTRY_SERVICE_VERSION = "registry-service-0.3.0"
+REGISTRY_SERVICE_VERSION = "registry-service-0.4.0"
 
 # model_family values resolve_active_model() knows how to reconstruct.
 # Kept explicit and checked (rather than a bare try/except around a
@@ -262,6 +262,38 @@ def active_artifact(session: Session) -> ModelArtifact | None:
     return session.execute(stmt).scalar_one_or_none()
 
 
+def pending_candidates(session: Session) -> list[ModelArtifact]:
+    """Every artifact whose latest registry event's to_status is
+    CANDIDATE or APPROVED (see PROMOTABLE_STATUSES) -- i.e. registered
+    but neither promoted nor rejected/retired yet. Purely for visibility
+    (api/routers/admin.py's AdminStatusResponse.pending_model_candidates)
+    so a human knows there's something to review, whether it was
+    hand-registered via `train-final-model --register` or produced by
+    orchestration/retraining_scheduler.py's automatic path -- never used
+    to decide anything on its own. Ordered newest-first (most recently
+    registered/approved first)."""
+    latest_per_artifact = (
+        select(
+            ModelRegistryEvent.artifact_id,
+            ModelRegistryEvent.to_status,
+            ModelRegistryEvent.sequence,
+            func.row_number()
+            .over(
+                partition_by=ModelRegistryEvent.artifact_id,
+                order_by=ModelRegistryEvent.sequence.desc(),
+            )
+            .label("rn"),
+        )
+    ).subquery()
+    stmt = (
+        select(ModelArtifact)
+        .join(latest_per_artifact, latest_per_artifact.c.artifact_id == ModelArtifact.artifact_id)
+        .where(latest_per_artifact.c.rn == 1, latest_per_artifact.c.to_status.in_(PROMOTABLE_STATUSES))
+        .order_by(latest_per_artifact.c.sequence.desc())
+    )
+    return list(session.execute(stmt).scalars())
+
+
 # Statuses promote_to_active() will accept as a promotion's starting
 # point. Deliberately excludes ACTIVE (already active -- promoting it
 # again would just retire-then-reactivate the same artifact, a
@@ -278,6 +310,27 @@ PROMOTABLE_STATUSES = ("CANDIDATE", "APPROVED")
 # ROLLED_BACK), not just a fresh CANDIDATE.
 ROLLBACK_REACTIVATABLE_STATUSES = ("CANDIDATE", "APPROVED", "RETIRED", "ROLLED_BACK")
 
+# promote_to_active() requires both of these keys in training_metrics --
+# proof a genuine out-of-sample walk-forward comparison actually ran
+# before this artifact reaches ACTIVE, not just train_final_poisson_model's
+# always-populated in-sample fit-quality numbers (mae/rmse/mean_bias/
+# mean_poisson_deviance above are computed against the SAME rows the
+# model was fit on, which is optimistic by construction -- see
+# train_final_model.py's own docstring). Found and fixed after an audit:
+# nothing previously stopped `train-final-model --register` followed
+# directly by `promote-model` without ever running
+# `train-walk-forward-challenger` first. historical/train_final_model.py's
+# optional walk_forward_metrics parameter is what populates these keys;
+# orchestration/retraining_scheduler.py's automatic path always supplies
+# them (it runs walk-forward validation itself before ever training a
+# final model), and the CLI's `train-final-model --after-walk-forward-
+# report` flag is how a human attaches them to a manually-trained
+# artifact.
+REQUIRED_WALK_FORWARD_METRIC_KEYS = (
+    "walk_forward_aggregate_baseline_mae",
+    "walk_forward_aggregate_challenger_mae",
+)
+
 
 def promote_to_active(
     session: Session, *, artifact_id: str, operator: str, reason: str | None = None
@@ -287,10 +340,11 @@ def promote_to_active(
     directive's "exactly one ACTIVE model at a time" requirement,
     enforced here rather than left to convention (see active_artifact()'s
     own docstring for why that matters). Refuses to promote an artifact
-    that isn't currently CANDIDATE/APPROVED (see PROMOTABLE_STATUSES) or
-    whose model_family resolve_active_model() can't actually reconstruct
-    -- both would otherwise silently break every future run_slate() call
-    with a clear error at promotion time instead."""
+    that isn't currently CANDIDATE/APPROVED (see PROMOTABLE_STATUSES), whose
+    model_family resolve_active_model() can't actually reconstruct, or that
+    was never evaluated out-of-sample (see REQUIRED_WALK_FORWARD_METRIC_KEYS)
+    -- all three would otherwise silently break or degrade every future
+    run_slate() call; each gets a clear error at promotion time instead."""
     artifact = session.get(ModelArtifact, artifact_id)
     if artifact is None:
         raise ValueError(f"no artifact found with artifact_id={artifact_id!r}")
@@ -305,6 +359,17 @@ def promote_to_active(
         raise ValueError(
             f"cannot promote artifact {artifact_id}: model_family {artifact.model_family!r} is not "
             f"one resolve_active_model() can serve (supported: {SUPPORTED_LIVE_MODEL_FAMILIES})"
+        )
+    training_metrics = artifact.training_metrics or {}
+    missing_keys = [k for k in REQUIRED_WALK_FORWARD_METRIC_KEYS if k not in training_metrics]
+    if missing_keys:
+        raise ValueError(
+            f"cannot promote artifact {artifact_id}: training_metrics is missing out-of-sample "
+            f"walk-forward evaluation ({', '.join(missing_keys)}). In-sample fit-quality numbers "
+            "alone are not enough to promote to production -- run "
+            "`cassandra train-walk-forward-challenger` first, then re-train with "
+            "`cassandra train-final-model --after-walk-forward-report <path>` so the comparison "
+            "is attached to this artifact."
         )
 
     previous = active_artifact(session)
@@ -424,6 +489,7 @@ def resolve_active_model(session: Session) -> ResolvedModel:
 __all__ = [
     "PROMOTABLE_STATUSES",
     "REGISTRY_SERVICE_VERSION",
+    "REQUIRED_WALK_FORWARD_METRIC_KEYS",
     "ROLLBACK_REACTIVATABLE_STATUSES",
     "SUPPORTED_LIVE_MODEL_FAMILIES",
     "ResolvedModel",
@@ -431,6 +497,7 @@ __all__ = [
     "compute_artifact_checksum",
     "create_model_artifact",
     "current_status",
+    "pending_candidates",
     "promote_to_active",
     "record_registry_event",
     "register_as_candidate",

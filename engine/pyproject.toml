@@ -76,6 +76,14 @@ select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
 "src/cassandra/api/**" = ["B008"]
 # Same story for typer's Argument()/Option() in argument defaults.
 "src/cassandra/cli/**" = ["B008"]
+# Migration files are immutable once committed (CLAUDE.md non-negotiable #3
+# / scripts/guardrails.py's no-migration-tampering check) -- a lint-only nit
+# discovered in an already-committed migration can never be fixed by editing
+# that file, only worked around here or in a fresh migration. Scoped to the
+# whole versions/ directory since the REVOKE/GRANT-by-username pattern (e.g.
+# '...' % current_user, or a long RAISE EXCEPTION message string) recurs
+# across migrations and a future one could hit the same UP031/E501 nits.
+"src/cassandra/db/migrations/versions/**" = ["UP031", "E501"]
 
 [tool.mypy]
 python_version = "3.12"

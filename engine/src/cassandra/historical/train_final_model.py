@@ -45,7 +45,7 @@ from cassandra.historical.dataset_builder import DatasetManifest
 from cassandra.historical.evaluation import evaluate_model, write_evaluation_report
 from cassandra.registry.service import create_model_artifact, register_as_candidate
 
-TRAIN_FINAL_MODEL_MODULE_VERSION = "train-final-model-0.1.0"
+TRAIN_FINAL_MODEL_MODULE_VERSION = "train-final-model-0.2.0"
 
 SUPPORTED_MODEL_FAMILIES = ("poisson-regression",)
 
@@ -87,6 +87,7 @@ def train_final_poisson_model(
     output_dir: Path,
     register: bool,
     notes: str | None = None,
+    walk_forward_metrics: dict[str, Any] | None = None,
 ) -> TrainFinalModelResult:
     """Loads ALL eligible rows from one frozen dataset (no walk-forward
     holdout), fits a Poisson-regression challenger, evaluates it
@@ -95,7 +96,22 @@ def train_final_poisson_model(
     writes a durable artifact, proves the artifact reloads byte-
     identically from the database and predicts identically once
     reloaded, and -- only if `register` is True -- registers it as
-    CANDIDATE."""
+    CANDIDATE.
+
+    `walk_forward_metrics`, when given, is merged into the artifact's
+    `training_metrics` -- registry/service.py's promote_to_active()
+    requires the specific keys it defines in
+    REQUIRED_WALK_FORWARD_METRIC_KEYS before an artifact can go ACTIVE,
+    since the in-sample numbers computed below are optimistic by
+    construction (evaluated against the same rows the model was fit on).
+    Pass the dict form of a real historical.walk_forward.WalkForwardResult
+    (e.g. `{"walk_forward_aggregate_baseline_mae": ..., "walk_forward_
+    aggregate_challenger_mae": ..., "walk_forward_n_folds": ...}`) --
+    orchestration/retraining_scheduler.py's automatic path always supplies
+    this; the CLI's `train-final-model --after-walk-forward-report` flag
+    is how a human attaches it manually. Omitting it still creates a
+    valid CANDIDATE artifact -- it just can't be promoted until a walk-
+    forward comparison is attached some other way."""
     fitted = fit_poisson_regression(rows)
     report = evaluate_model(rows, fitted, dataset_id=manifest.dataset_id)
     write_evaluation_report(report, output_dir / "evaluations")
@@ -108,12 +124,14 @@ def train_final_poisson_model(
             "COEFFICIENT_NAMES have drifted out of sync"
         )
 
-    training_metrics = {
+    training_metrics: dict[str, Any] = {
         "mae": report.mae,
         "rmse": report.rmse,
         "mean_bias": report.mean_bias,
         "mean_poisson_deviance": report.mean_poisson_deviance,
     }
+    if walk_forward_metrics:
+        training_metrics.update(walk_forward_metrics)
 
     with session_scope() as write_session:
         artifact = create_model_artifact(

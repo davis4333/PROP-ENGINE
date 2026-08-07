@@ -43,7 +43,17 @@ _BASE_KWARGS = {
     "training_row_count": 500,
     "trained_at": datetime(2026, 8, 5, tzinfo=UTC),
     "dependency_versions": {"numpy": "1.26.0"},
-    "training_metrics": {"mae": 1.2, "rmse": 1.5},
+    # walk_forward_* keys required by promote_to_active() (see
+    # REQUIRED_WALK_FORWARD_METRIC_KEYS) -- included here so every
+    # existing promotion/rollback test doesn't need its own override;
+    # test_promote_to_active_refuses_an_artifact_missing_walk_forward_
+    # metrics below is the dedicated regression test for the gate itself.
+    "training_metrics": {
+        "mae": 1.2,
+        "rmse": 1.5,
+        "walk_forward_aggregate_baseline_mae": 1.8,
+        "walk_forward_aggregate_challenger_mae": 1.3,
+    },
     "evaluation_report_ids": ["eval_abc123"],
     "created_by": "tester",
 }
@@ -334,6 +344,25 @@ def test_promote_to_active_refuses_an_unsupported_family(db_session):
 def test_promote_to_active_refuses_an_unknown_artifact_id(db_session):
     with pytest.raises(ValueError, match="no artifact found"):
         promote_to_active(db_session, artifact_id="artifact_does_not_exist", operator="tyler")
+
+
+def test_promote_to_active_refuses_an_artifact_missing_walk_forward_metrics(db_session):
+    # in-sample-only metrics (mae/rmse), no walk_forward_* keys -- exactly
+    # what train_final_poisson_model(register=True) produces on its own,
+    # without a walk_forward_metrics argument attached.
+    artifact = _create(db_session, training_metrics={"mae": 1.2, "rmse": 1.5})
+    register_as_candidate(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+
+    with pytest.raises(ValueError, match="out-of-sample walk-forward evaluation"):
+        promote_to_active(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+
+
+def test_promote_to_active_refuses_an_artifact_with_no_training_metrics_at_all(db_session):
+    artifact = _create(db_session, training_metrics={})
+    register_as_candidate(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+
+    with pytest.raises(ValueError, match="out-of-sample walk-forward evaluation"):
+        promote_to_active(db_session, artifact_id=artifact.artifact_id, operator="tyler")
 
 
 def test_rollback_active_is_a_noop_when_nothing_is_active(db_session):

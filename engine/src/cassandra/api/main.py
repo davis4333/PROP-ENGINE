@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from cassandra.api.routers import admin, ledger, today
 from cassandra.config import admin_secret_is_weak, get_git_commit_sha, is_production_environment, settings
+from cassandra.orchestration.retraining_scheduler import start_background_retraining_scheduler
 from cassandra.orchestration.scheduler import start_background_scheduler
 
 
@@ -36,10 +37,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # `TestClient(app)` used without a `with` block (this repo's API test
     # fixture), so the test suite never starts it regardless.
     stop_event = start_background_scheduler()
+    # Same no-op-unless-enabled pattern, separate thread/cadence -- see
+    # orchestration/retraining_scheduler.py's module docstring for why a
+    # heavy retrain attempt must never share the daily scheduler's thread.
+    retrain_stop_event = start_background_retraining_scheduler()
     try:
         yield
     finally:
         stop_event.set()
+        retrain_stop_event.set()
 
 
 app = FastAPI(title="Cassandra", version="0.1.0", lifespan=lifespan)

@@ -118,6 +118,26 @@ class ActiveModelOut(BaseModel):
     activated_by: str
 
 
+class PendingModelCandidateOut(BaseModel):
+    """A CANDIDATE/APPROVED artifact awaiting human review -- either
+    hand-registered via `cassandra train-final-model --register`, or
+    produced automatically by orchestration/retraining_scheduler.py's
+    "self-learning loop" (settings.auto_retrain_enabled). Never promoted
+    on its own; this is purely visibility so a human knows to go look,
+    per registry/service.py's promote_to_active() requiring an explicit
+    human --operator action either way."""
+
+    artifact_id: str
+    model_family: str
+    fitted_model_version: str
+    status: str
+    trained_at: datetime
+    created_by: str
+    training_dataset_id: str
+    training_metrics: dict
+    notes: str | None
+
+
 class AdminStatusResponse(BaseModel):
     sources: list[SourceHealthOut]
     recent_runs: list[PipelineRunOut]
@@ -131,6 +151,9 @@ class AdminStatusResponse(BaseModel):
     # is the richer detail (training provenance/metrics/who-activated-it)
     # only a real promoted artifact has.
     active_model: ActiveModelOut | None
+    # CANDIDATE/APPROVED artifacts not yet promoted or rejected -- empty
+    # list in the common case (nothing pending review).
+    pending_model_candidates: list[PendingModelCandidateOut]
     blocking_issues: list[str]
 
 

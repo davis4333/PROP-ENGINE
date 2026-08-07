@@ -13,6 +13,7 @@ import json as json_module
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import typer
@@ -672,6 +673,16 @@ def train_final_model_cmd(
         False, "--register", help="Register the fitted artifact as CANDIDATE. Never auto-promotes further."
     ),
     notes: str | None = typer.Option(None, "--notes", help="Free-text note stored on the artifact."),
+    after_walk_forward_report: str | None = typer.Option(
+        None,
+        "--after-walk-forward-report",
+        help=(
+            "Path to a JSON report written by train-walk-forward-challenger. Attaches its "
+            "aggregate_baseline_mae/aggregate_challenger_mae/n_folds to this artifact's "
+            "training_metrics -- promote-model refuses to promote an artifact that never had "
+            "a real out-of-sample comparison attached this way."
+        ),
+    ),
 ) -> None:
     """Loads a frozen dataset, fits a FINAL challenger on every eligible
     row (no walk-forward holdout -- see train-walk-forward-challenger for
@@ -681,7 +692,9 @@ def train_final_model_cmd(
     identically once reloaded, and -- only with `--register` -- registers
     it as CANDIDATE. **No automatic promotion**: CANDIDATE is the only
     status this command can ever reach; promoting past it requires a
-    separate, explicit, human action (mission directive Phase 3)."""
+    separate, explicit, human action (mission directive Phase 3) --
+    and, per registry/service.py's promote_to_active(), also requires
+    --after-walk-forward-report to have been passed here first."""
     try:
         from cassandra.historical.train_final_model import (
             SUPPORTED_MODEL_FAMILIES,
@@ -709,6 +722,20 @@ def train_final_model_cmd(
         for line in fh:
             rows.append(json_module.loads(line))
 
+    walk_forward_metrics: dict[str, Any] | None = None
+    if after_walk_forward_report:
+        wf_path = Path(after_walk_forward_report)
+        if not wf_path.exists():
+            typer.echo(f"No walk-forward report found: {wf_path}")
+            raise typer.Exit(code=1)
+        wf_data = json_module.loads(wf_path.read_text())
+        walk_forward_metrics = {
+            "walk_forward_aggregate_baseline_mae": wf_data["aggregate_baseline_mae"],
+            "walk_forward_aggregate_challenger_mae": wf_data["aggregate_challenger_mae"],
+            "walk_forward_n_folds": wf_data["n_folds"],
+            "walk_forward_dataset_id": wf_data["dataset_id"],
+        }
+
     result = train_final_poisson_model(
         manifest=manifest,
         rows=rows,
@@ -716,6 +743,7 @@ def train_final_model_cmd(
         output_dir=Path(output_dir),
         register=register,
         notes=notes,
+        walk_forward_metrics=walk_forward_metrics,
     )
 
     typer.echo(

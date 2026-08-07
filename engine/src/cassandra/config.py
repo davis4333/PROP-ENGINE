@@ -109,6 +109,35 @@ class Settings(BaseSettings):
     scheduler_poll_interval_seconds: int = 15 * 60
     scheduler_grade_lookback_days: int = 3
 
+    # orchestration/retraining_scheduler.py -- periodic, human-gated model
+    # retraining (the "self-learning loop"). Off by default, same opt-in
+    # posture as auto_scheduler_enabled -- an engine imported for local/
+    # dev/CI/test use shouldn't silently start a backfill+train cycle in
+    # the background. Runs on its own separate background thread/cadence
+    # from auto_scheduler_enabled above, since a retrain attempt (backfill
+    # + dataset build + walk-forward fit) is far heavier/slower than a
+    # daily run_slate()/grade_slate_run() tick and must never delay those.
+    # NEVER auto-promotes -- see registry/service.py's promote_to_active()
+    # docstring; a human always reviews and promotes/rejects by hand.
+    auto_retrain_enabled: bool = False
+    # How often (days) a retrain attempt is due -- provisional default
+    # (weekly), not a calibrated cadence; tunable without a code change.
+    # Cadence is DB-derived (audit_events' latest "retrain_attempted" row),
+    # not in-memory, matching auto_run_hours_local's restart-safety.
+    retrain_interval_days: int = 7
+    # How many trailing days of newly-Final games to backfill before
+    # rebuilding the training dataset on each retrain attempt --
+    # provisional default, generously overlaps retrain_interval_days so a
+    # slow/late-completing game from a prior window is still caught.
+    # historical/backfill.py's run_backfill() is idempotent/safe to
+    # re-run for an overlapping range -- already-succeeded work items are
+    # skipped, never redone.
+    retrain_backfill_lookback_days: int = 14
+    # First MLB season a rebuilt training dataset covers -- every season
+    # from this one through the current year is included, so the dataset
+    # keeps growing as more seasons complete without a code change.
+    retrain_dataset_start_season: int = 2023
+
     # adapters/lines_odds_api.py -- a real, licensed odds vendor (The Odds
     # API), used in place of adapters/lines_manual.py's manual drop-folder
     # stand-in when configured. NOT Underdog's own DFS pick'em lines --

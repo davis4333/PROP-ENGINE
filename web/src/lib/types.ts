@@ -95,6 +95,18 @@ export interface ActiveModelOut {
   activated_by: string;
 }
 
+export interface PendingModelCandidateOut {
+  artifact_id: string;
+  model_family: string;
+  fitted_model_version: string;
+  status: string;
+  trained_at: string;
+  created_by: string;
+  training_dataset_id: string;
+  training_metrics: Record<string, number>;
+  notes: string | null;
+}
+
 export interface AdminStatusResponse {
   sources: SourceHealthOut[];
   recent_runs: PipelineRunOut[];
@@ -104,6 +116,7 @@ export interface AdminStatusResponse {
   decision_edge_threshold: number;
   git_commit_sha: string | null;
   active_model: ActiveModelOut | null;
+  pending_model_candidates: PendingModelCandidateOut[];
   blocking_issues: string[];
 }
 

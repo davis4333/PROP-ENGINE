@@ -128,6 +128,50 @@ def test_train_final_poisson_model_registers_as_candidate_when_requested(tmp_pat
         assert artifact.notes == "test registration"
 
 
+def test_train_final_poisson_model_merges_walk_forward_metrics_into_training_metrics(tmp_path):
+    # registry/service.py's promote_to_active() requires these specific
+    # keys before an artifact can be promoted -- this is what actually
+    # attaches them.
+    dataset_id = f"ds_test_{uuid.uuid4().hex[:8]}"
+    rows = _synthetic_rows(300, seed=3)
+
+    result = train_final_poisson_model(
+        manifest=_manifest(dataset_id),
+        rows=rows,
+        operator="tester",
+        output_dir=tmp_path,
+        register=False,
+        walk_forward_metrics={
+            "walk_forward_aggregate_baseline_mae": 1.8,
+            "walk_forward_aggregate_challenger_mae": 1.3,
+            "walk_forward_n_folds": 5,
+            "walk_forward_dataset_id": dataset_id,
+        },
+    )
+
+    assert result.training_metrics["walk_forward_aggregate_baseline_mae"] == 1.8
+    assert result.training_metrics["walk_forward_aggregate_challenger_mae"] == 1.3
+    # In-sample metrics are still present alongside the merged-in ones.
+    assert "mae" in result.training_metrics
+    assert "rmse" in result.training_metrics
+
+    with session_scope() as session:
+        artifact = session.get(ModelArtifact, result.artifact_id)
+        assert artifact.training_metrics["walk_forward_n_folds"] == 5
+
+
+def test_train_final_poisson_model_without_walk_forward_metrics_omits_those_keys(tmp_path):
+    dataset_id = f"ds_test_{uuid.uuid4().hex[:8]}"
+    rows = _synthetic_rows(300, seed=4)
+
+    result = train_final_poisson_model(
+        manifest=_manifest(dataset_id), rows=rows, operator="tester", output_dir=tmp_path, register=False
+    )
+
+    assert "walk_forward_aggregate_baseline_mae" not in result.training_metrics
+    assert "walk_forward_aggregate_challenger_mae" not in result.training_metrics
+
+
 def test_train_final_poisson_model_reload_matches_the_original_fit(tmp_path):
     # The function itself raises RuntimeError if the round-trip validation
     # fails (see its own module docstring) -- a successful return is

@@ -206,6 +206,19 @@ and take under a minute to set up.
        ```bash
        DATABASE_URL="$DATABASE_URL" engine/.venv/bin/python -m cassandra.cli.main run-slate --date "$(date +%F)"
        ```
+   6b. **The self-learning loop is opt-in and separate** — set
+       `AUTO_RETRAIN_ENABLED=true` to have the engine periodically
+       backfill recently-completed games, rebuild the training dataset,
+       and run a walk-forward out-of-sample comparison against the
+       baseline (`orchestration/retraining_scheduler.py`, weekly by
+       default — `RETRAIN_INTERVAL_DAYS`). It only ever registers a new
+       CANDIDATE model when the challenger genuinely beats the baseline
+       on that comparison — it never promotes anything to production on
+       its own. A registered candidate shows up on the Admin page under
+       "Pending Model Candidates"; review its metrics and run
+       `cassandra promote-model --artifact-id <id> --operator <you>` (or
+       `cassandra rollback-model` to undo) when you're ready to make it
+       live.
 7. For a persistent public deployment (not just the live-editing
    workspace), use Replit's **Deployments** feature — `.replit`'s
    `[deployment]` section is already configured to run the same startup
