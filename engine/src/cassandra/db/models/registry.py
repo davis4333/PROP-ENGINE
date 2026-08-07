@@ -22,7 +22,18 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, func
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    FetchedValue,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -114,6 +125,15 @@ class ModelRegistryEvent(Base):
     from_status: Mapped[str | None] = mapped_column(String)
     to_status: Mapped[str] = mapped_column(String, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # A Postgres BIGSERIAL, not just a human-readable timestamp: `now()`
+    # is frozen at TRANSACTION start, so two events written in the same
+    # transaction (exactly what promote_to_active() does) get identical
+    # `occurred_at` values -- `sequence` (nextval(), evaluated per
+    # statement) is what registry/service.py actually orders by for any
+    # correctness-sensitive query (current_status(), active_artifact()).
+    sequence: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, unique=True, server_default=FetchedValue()
+    )
     operator: Mapped[str] = mapped_column(String, nullable=False)
     reason: Mapped[str | None] = mapped_column(String)
     # Snapshot of config.get_git_commit_sha() at the moment of this event

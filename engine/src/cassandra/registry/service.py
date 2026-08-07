@@ -1,7 +1,12 @@
 """Durable model artifacts + registry status events (mission directive
-Phase 3A/3B). Two responsibilities, deliberately kept generic here (no
-Poisson-specific knowledge) so a future model family is a drop-in --
-family-specific fitting/reload logic lives in historical/train_final_model.py:
+Phase 3A/3B) and resolving which model the LIVE pipeline should actually
+predict with (Phase 4). Deliberately kept generic here (no Poisson-
+specific fitting knowledge) so a future model family is a drop-in --
+family-specific fitting logic lives in historical/train_final_model.py;
+family-specific *reconstruction* (the reverse of fitting -- turning a
+stored artifact's coefficients back into a usable model) lives here in
+resolve_active_model(), since that has to run from the live pipeline,
+not just training tooling.
 
   - create_model_artifact(): writes one immutable artifact row. Every
     field the directive asks for (coefficients, provenance, checksum,
@@ -10,19 +15,24 @@ family-specific fitting/reload logic lives in historical/train_final_model.py:
     append-only at the database grant level (see this migration's
     docstring: `e076e6061a06_model_artifacts_and_registry_events.py`).
 
-  - record_registry_event() / register_as_candidate(): append a status-
-    change event. There is no UPDATE path for an artifact's or event's
-    status anywhere in this module -- "current status" is always
-    current_status()'s query against the latest event, the same
-    ADR 0002 "current" pattern `projections` already uses. Only
-    register_as_candidate() (CANDIDATE, from_status=None) is actually
-    called by any code in this build (historical/train_final_model.py's
-    `cassandra train-final-model --register`) -- record_registry_event()
-    is the general primitive a future promote/shadow/rollback CLI action
-    would call, not wired to anything today. No function in this module
-    ever decides *when* a promotion should happen; every call requires an
-    explicit caller-supplied `operator` string, so nothing here can
-    silently promote a model on its own.
+  - record_registry_event() / register_as_candidate() / promote_to_active()
+    / rollback_active(): append a status-change event. There is no UPDATE
+    path for an artifact's or event's status anywhere in this module --
+    "current status" is always current_status()'s query against the
+    latest event, the same ADR 0002 "current" pattern `projections`
+    already uses. Every one of these requires an explicit caller-supplied
+    `operator` string, so nothing here can silently promote/activate a
+    model on its own -- promotion only ever happens because a human (or a
+    script acting under a human's explicit instruction) called
+    promote_to_active() with their own identity attached.
+
+  - resolve_active_model(): the live pipeline's one entry point for
+    "which model should I actually use right now." Returns the permanent,
+    unmodified baseline whenever no artifact is ACTIVE (including the
+    common case where nothing has ever been promoted) -- the directive's
+    "permanent baseline as guaranteed fallback" requirement, enforced
+    structurally rather than by convention: there is no code path here
+    that can return an empty/broken model.
 """
 
 from __future__ import annotations
@@ -30,16 +40,29 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from cassandra.config import get_git_commit_sha
 from cassandra.db.models.registry import MODEL_REGISTRY_STATES, ModelArtifact, ModelRegistryEvent
+from cassandra.models.baseline import MODEL_VERSION as BASELINE_MODEL_VERSION
+from cassandra.models.baseline import BaselinePoissonModel
+from cassandra.models.interface import StrikeoutModel
+from cassandra.models.poisson_regression import PoissonRegressionModel
 
-REGISTRY_SERVICE_VERSION = "registry-service-0.1.0"
+REGISTRY_SERVICE_VERSION = "registry-service-0.2.0"
+
+# model_family values resolve_active_model() knows how to reconstruct.
+# Kept explicit and checked (rather than a bare try/except around a
+# dispatch dict) so an artifact with an unsupported family fails loudly
+# with a clear message instead of silently falling back to the baseline
+# -- an operator who promoted a real artifact needs to know their
+# promotion isn't actually taking effect, not have it silently ignored.
+SUPPORTED_LIVE_MODEL_FAMILIES = ("poisson-regression",)
 
 
 def compute_artifact_checksum(
@@ -196,21 +219,101 @@ def current_status(session: Session, artifact_id: str) -> str | None:
     """The artifact's current status, derived from its latest registry
     event -- None if the artifact has never been registered at all (a
     fitted-but-not-registered artifact, e.g. `train-final-model` run
-    without `--register`)."""
+    without `--register`). Orders by `sequence`, not `occurred_at`: two
+    events written in the same transaction (e.g. promote_to_active()'s
+    retire-then-activate pair) get identical `occurred_at` values since
+    Postgres's `now()` is frozen at transaction start, but `sequence`
+    (a BIGSERIAL, evaluated per statement) is always a real total order."""
     stmt = (
         select(ModelRegistryEvent.to_status)
         .where(ModelRegistryEvent.artifact_id == artifact_id)
-        .order_by(ModelRegistryEvent.occurred_at.desc())
+        .order_by(ModelRegistryEvent.sequence.desc())
         .limit(1)
     )
     return session.execute(stmt).scalar_one_or_none()
 
 
+def active_artifact(session: Session) -> ModelArtifact | None:
+    """The artifact whose latest registry event has to_status == "ACTIVE",
+    or None if no artifact is currently active. Deliberately uses
+    scalar_one_or_none() (raises on more than one match) rather than
+    silently picking one: promote_to_active() always atomically retires
+    whatever was previously ACTIVE in the same transaction it activates a
+    new one, so more than one ACTIVE artifact existing at once is a real
+    data-integrity violation this should surface loudly, never paper
+    over by guessing which one "really" counts."""
+    latest_per_artifact = (
+        select(
+            ModelRegistryEvent.artifact_id,
+            ModelRegistryEvent.to_status,
+            func.row_number()
+            .over(
+                partition_by=ModelRegistryEvent.artifact_id,
+                order_by=ModelRegistryEvent.sequence.desc(),
+            )
+            .label("rn"),
+        )
+    ).subquery()
+    stmt = (
+        select(ModelArtifact)
+        .join(latest_per_artifact, latest_per_artifact.c.artifact_id == ModelArtifact.artifact_id)
+        .where(latest_per_artifact.c.rn == 1, latest_per_artifact.c.to_status == "ACTIVE")
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
+@dataclass(frozen=True)
+class ResolvedModel:
+    """What orchestration/run_slate.py's PROJECT stage actually needs:
+    a ready-to-call model, the exact version string to record on every
+    projection it produces (a specific artifact's fitted_model_version
+    when serving a promoted challenger -- NOT the shared model_code_version
+    every artifact of that family has in common, so a live projection is
+    traceable back to the one artifact that produced it), and the
+    artifact_id (if any) for anything that wants to log/display it."""
+
+    model: StrikeoutModel
+    model_version: str
+    active_artifact_id: str | None
+
+
+def resolve_active_model(session: Session) -> ResolvedModel:
+    """The live pipeline's single entry point for "which model should I
+    actually predict with right now." Returns the permanent, unmodified
+    baseline whenever no artifact is ACTIVE -- structurally guaranteed,
+    not by convention: every branch below either returns a real model or
+    raises (on a data-integrity problem this project's own philosophy
+    says must fail loudly, never silently degrade -- see
+    active_artifact()'s own docstring), so there is no path that returns
+    nothing."""
+    artifact = active_artifact(session)
+    if artifact is None:
+        return ResolvedModel(
+            model=BaselinePoissonModel(), model_version=BASELINE_MODEL_VERSION, active_artifact_id=None
+        )
+    if artifact.model_family == "poisson-regression":
+        model = PoissonRegressionModel(coefficients=tuple(float(c) for c in artifact.coefficients))
+        return ResolvedModel(
+            model=model, model_version=artifact.fitted_model_version, active_artifact_id=artifact.artifact_id
+        )
+    raise ValueError(
+        f"active artifact {artifact.artifact_id} has model_family "
+        f"{artifact.model_family!r}, which resolve_active_model() doesn't know how to "
+        f"reconstruct (supported: {SUPPORTED_LIVE_MODEL_FAMILIES}). This should be "
+        "structurally impossible -- promote_to_active() only accepts artifacts whose "
+        "family it can reconstruct -- so seeing this means that guard was bypassed."
+    )
+
+
 __all__ = [
     "REGISTRY_SERVICE_VERSION",
+    "SUPPORTED_LIVE_MODEL_FAMILIES",
+    "ResolvedModel",
+    "active_artifact",
     "compute_artifact_checksum",
     "create_model_artifact",
     "current_status",
     "record_registry_event",
     "register_as_candidate",
+    "resolve_active_model",
 ]

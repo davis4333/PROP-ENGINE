@@ -23,8 +23,10 @@ from cassandra.adapters.schedule_mlb import MLB_STATS_API_BASE
 from cassandra.adapters.weather_openmeteo import ARCHIVE_URL
 from cassandra.config import settings
 from cassandra.db.models.pipeline import PipelineRunStage
+from cassandra.historical.challenger_poisson import COEFFICIENT_NAMES
 from cassandra.identity_ids import mlb_player_id
 from cassandra.orchestration.run_slate import grade_slate_run, run_slate
+from cassandra.registry.service import create_model_artifact, record_registry_event
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "mlb_api"
 SLATE_DATE = datetime(2023, 6, 15).date()
@@ -171,6 +173,74 @@ def test_run_slate_then_grade_slate_end_to_end(db_session, tmp_path: Path):
         .one()
     )
     assert grade_stage.status == "succeeded"
+
+
+@respx.mock
+def test_run_slate_uses_the_active_registry_model_when_one_is_promoted(db_session, tmp_path: Path):
+    # Phase 4: closes the actual loop -- a promoted challenger must be
+    # what run_slate() predicts with, not just something sitting in the
+    # registry. Seeds a real ModelArtifact + an "ACTIVE" registry event
+    # directly on `db_session` (same rolled-back transaction run_slate()
+    # itself uses here, so nothing here permanently pollutes the
+    # database -- see registry/service.py's own tests for why this
+    # differs from historical/train_final_model.py's tests, which
+    # genuinely commit).
+    artifact = create_model_artifact(
+        db_session,
+        model_family="poisson-regression",
+        model_code_version="poisson-regression-challenger-0.1.0",
+        coefficients=[0.5, 0.1, 2.0, -0.02, 0.0],
+        coefficient_order=list(COEFFICIENT_NAMES),
+        preprocessing_rules={},
+        training_dataset_id="ds_test_active",
+        dataset_builder_version="v1",
+        availability_policy_version="v1",
+        feature_set_version="v1",
+        training_seasons=[2023],
+        training_game_types=["R"],
+        training_row_count=500,
+        trained_at=datetime.now(UTC),
+        dependency_versions={},
+        training_metrics={},
+        evaluation_report_ids=[],
+        created_by="tester",
+    )
+    record_registry_event(
+        db_session,
+        artifact_id=artifact.artifact_id,
+        event_type="activated",
+        to_status="ACTIVE",
+        operator="tester",
+        from_status="CANDIDATE",
+    )
+
+    respx.get(f"{MLB_STATS_API_BASE}/schedule").mock(
+        return_value=httpx.Response(200, json=_load("schedule_2023-06-15.json"))
+    )
+    respx.route(url__regex=rf"{re.escape(MLB_STATS_API_BASE)}/people/\d+/stats").mock(
+        side_effect=_gamelog_side_effect
+    )
+    respx.get(ARCHIVE_URL).mock(return_value=httpx.Response(200, json=_load("weather_archive_camden.json")))
+    respx.route(url__regex=rf"{re.escape(LIVE_FEED_BASE)}/game/\d+/feed/live").mock(
+        side_effect=_feed_side_effect
+    )
+
+    lines_drop_dir = _lines_drop_dir(tmp_path)
+    cutoff_at = datetime.now(UTC) + timedelta(minutes=2)
+    client = httpx.Client()
+    run_result = run_slate(
+        db_session, SLATE_DATE, cutoff_at, http_client=client, lines_drop_dir=lines_drop_dir, publish=True
+    )
+    db_session.flush()
+
+    kikuchi_id = mlb_player_id(KIKUCHI_MLB_ID)
+    kikuchi_proj = next(p for p in run_result.projections_published if p.player_id == kikuchi_id)
+    # The whole point: every projection this run published -- not just
+    # Kikuchi's -- carries the ACTIVE artifact's own fitted_model_version,
+    # never the permanent baseline's "k-model-0.1.0", proving PROJECT
+    # actually resolved and used the promoted challenger.
+    assert kikuchi_proj.model_version == artifact.fitted_model_version
+    assert all(p.model_version == artifact.fitted_model_version for p in run_result.projections_published)
 
 
 @respx.mock

@@ -10,15 +10,20 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, MultipleResultsFound
 
 from cassandra.db.models.registry import ModelArtifact, ModelRegistryEvent
+from cassandra.models.baseline import MODEL_VERSION as BASELINE_MODEL_VERSION
+from cassandra.models.baseline import BaselinePoissonModel
+from cassandra.models.poisson_regression import PoissonRegressionModel
 from cassandra.registry.service import (
+    active_artifact,
     compute_artifact_checksum,
     create_model_artifact,
     current_status,
     record_registry_event,
     register_as_candidate,
+    resolve_active_model,
 )
 
 _BASE_KWARGS = {
@@ -162,3 +167,108 @@ def test_model_registry_events_update_is_blocked(db_session):
             text("UPDATE model_registry_events SET reason = 'hacked' WHERE event_id = :id"),
             {"id": event.event_id},
         )
+
+
+def test_active_artifact_is_none_when_nothing_has_ever_been_registered(db_session):
+    _create(db_session)  # exists, but never registered/activated
+    assert active_artifact(db_session) is None
+
+
+def test_active_artifact_is_none_when_only_candidate(db_session):
+    artifact = _create(db_session)
+    register_as_candidate(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+    assert active_artifact(db_session) is None
+
+
+def test_active_artifact_returns_the_activated_one(db_session):
+    artifact = _create(db_session)
+    record_registry_event(
+        db_session,
+        artifact_id=artifact.artifact_id,
+        event_type="activated",
+        to_status="ACTIVE",
+        operator="tyler",
+        from_status="CANDIDATE",
+    )
+    found = active_artifact(db_session)
+    assert found is not None
+    assert found.artifact_id == artifact.artifact_id
+
+
+def test_active_artifact_ignores_a_retired_one(db_session):
+    artifact = _create(db_session)
+    record_registry_event(
+        db_session,
+        artifact_id=artifact.artifact_id,
+        event_type="activated",
+        to_status="ACTIVE",
+        operator="tyler",
+        from_status="CANDIDATE",
+    )
+    record_registry_event(
+        db_session,
+        artifact_id=artifact.artifact_id,
+        event_type="retired",
+        to_status="RETIRED",
+        operator="tyler",
+        from_status="ACTIVE",
+    )
+    assert active_artifact(db_session) is None
+
+
+def test_active_artifact_raises_if_two_artifacts_are_somehow_both_active(db_session):
+    # A real data-integrity violation (should be structurally impossible
+    # once promote_to_active() always atomically retires the previous
+    # ACTIVE artifact in the same transaction) -- active_artifact() must
+    # surface this loudly, never silently guess which one "really" counts.
+    a = _create(db_session, model_code_version="v-a")
+    b = _create(db_session, model_code_version="v-b")
+    for artifact in (a, b):
+        record_registry_event(
+            db_session,
+            artifact_id=artifact.artifact_id,
+            event_type="activated",
+            to_status="ACTIVE",
+            operator="tyler",
+            from_status="CANDIDATE",
+        )
+    with pytest.raises(MultipleResultsFound):
+        active_artifact(db_session)
+
+
+def test_resolve_active_model_falls_back_to_baseline_when_nothing_is_active(db_session):
+    resolved = resolve_active_model(db_session)
+    assert isinstance(resolved.model, BaselinePoissonModel)
+    assert resolved.model_version == BASELINE_MODEL_VERSION
+    assert resolved.active_artifact_id is None
+
+
+def test_resolve_active_model_returns_the_active_poisson_artifact(db_session):
+    artifact = _create(db_session, coefficients=[0.5, 0.1, 2.0, -0.02, 0.0])
+    record_registry_event(
+        db_session,
+        artifact_id=artifact.artifact_id,
+        event_type="activated",
+        to_status="ACTIVE",
+        operator="tyler",
+        from_status="CANDIDATE",
+    )
+    resolved = resolve_active_model(db_session)
+    assert isinstance(resolved.model, PoissonRegressionModel)
+    assert resolved.model.coefficients == (0.5, 0.1, 2.0, -0.02, 0.0)
+    assert resolved.model_version == artifact.fitted_model_version
+    assert resolved.active_artifact_id == artifact.artifact_id
+
+
+def test_resolve_active_model_raises_for_an_unsupported_family(db_session):
+    artifact = _create(db_session, model_family="some-future-family")
+    record_registry_event(
+        db_session,
+        artifact_id=artifact.artifact_id,
+        event_type="activated",
+        to_status="ACTIVE",
+        operator="tyler",
+        from_status="CANDIDATE",
+    )
+    with pytest.raises(ValueError, match="some-future-family"):
+        resolve_active_model(db_session)

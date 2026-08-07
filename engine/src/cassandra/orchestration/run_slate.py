@@ -58,9 +58,9 @@ from cassandra.grading.service import grade_slate
 from cassandra.identity_ids import mlb_player_id
 from cassandra.ingestion.ingest_service import IngestResult, ingest
 from cassandra.ledger.service import current_projections_for_slate, publish_projection
-from cassandra.models.baseline import MODEL_VERSION, BaselinePoissonModel
 from cassandra.pit.asof import all_as_of
 from cassandra.pit.snapshot_builder import PitcherSlateEntry, build_snapshot, games_for_slate_date
+from cassandra.registry.service import resolve_active_model
 
 # Venue coordinates for the (free) Open-Meteo weather adapter -- MLB's own
 # schedule/venue payload doesn't include lat/lon, and there's no
@@ -374,14 +374,21 @@ def run_slate(
         _ensure_feature_set(session, FEATURE_SET_VERSION)
         projectable: list[PitcherSlateEntry] = [e for e in entries if e.probable is not None]
         result.entries_skipped_no_starter = len(entries) - len(projectable)
-        model = BaselinePoissonModel()
+        # Whichever artifact the registry currently has ACTIVE, or the
+        # permanent baseline if none is (registry/service.py's
+        # resolve_active_model() guarantees one or the other, never
+        # neither) -- resolved once per run and reused for every entry,
+        # same as the single BaselinePoissonModel() instance this
+        # replaced.
+        resolved_model = resolve_active_model(session)
+        model = resolved_model.model
         features_by_entry: dict[int, dict[str, Any]] = {
             i: build_features(e, effective_cutoff) for i, e in enumerate(projectable)
         }
         session.flush()
         _mark_succeeded(
             "PROJECT",
-            f"{len(projectable)} entries projected; "
+            f"{len(projectable)} entries projected using model_version={resolved_model.model_version}; "
             f"{result.entries_skipped_no_starter} skipped (no confirmed starter, DATA_MISSING)",
         )
 
@@ -431,7 +438,7 @@ def run_slate(
                 line=raw_line,
                 feature_set_version=FEATURE_SET_VERSION,
                 features=features_by_entry[i],
-                model_version=MODEL_VERSION,
+                model_version=resolved_model.model_version,
                 decision=decision,
                 as_of=effective_cutoff,
                 publish=publish,

@@ -980,3 +980,73 @@ live-safe boundary for real rather than by inspection.
 
 Verified: 364 tests passing (357 + 7) against the scratch database,
 ruff/mypy/guardrails clean.
+
+### 4.2 -- wire the registry into the live decision engine (done)
+
+`orchestration/run_slate.py`'s PROJECT stage hardcoded `model =
+BaselinePoissonModel()` -- the registry built in Phase 3 was completely
+inert; nothing live ever looked at it. Fix: `registry/service.py` gained
+`active_artifact()` (finds the artifact whose latest event has
+`to_status == "ACTIVE"`, deriving it the same query-the-latest-event way
+`current_status()` already does) and `resolve_active_model()` (returns a
+`ResolvedModel(model, model_version, active_artifact_id)` -- the
+permanent baseline whenever nothing is ACTIVE, or a reconstructed
+`PoissonRegressionModel` from the active artifact's own coefficients
+when one is). `run_slate()` now calls `resolve_active_model()` once per
+run and threads its `model_version` into every `publish_projection()`
+call, replacing the hardcoded baseline `MODEL_VERSION` constant -- so a
+live projection's `model_version` is now the SPECIFIC artifact's
+`fitted_model_version` (unique per artifact_id) whenever a challenger is
+active, not just the shared family-level code version, giving full
+per-projection traceability back to exactly which trained artifact
+produced it.
+
+**A real bug found by this stage's own new tests, before any commit**:
+`active_artifact()`/`current_status()` originally ordered by
+`ModelRegistryEvent.occurred_at DESC`, but Postgres's `now()` (the
+column's `server_default`) is frozen at TRANSACTION start, not statement
+start -- two events written in the same transaction (exactly what a
+future `promote_to_active()` does: retire the old ACTIVE artifact and
+activate the new one together) get byte-identical `occurred_at` values,
+making the ordering non-deterministic between them. Caught immediately
+by `test_active_artifact_ignores_a_retired_one` failing on a real
+assertion, not a hang or a vague symptom. Fixed with a new migration
+(`f18a2c4e9b31`) adding a Postgres `BIGSERIAL` `sequence` column to
+`model_registry_events` (`nextval()` is evaluated per-statement, never
+frozen per-transaction, unlike `now()`) -- both functions now order by
+`sequence DESC`, a real total order immune to this. Hit a second issue
+getting the column itself right: the SQLAlchemy column needed
+`server_default=FetchedValue()` (not just `nullable=False`), or the ORM
+would send an explicit `NULL` for `sequence` on every INSERT instead of
+leaving it for Postgres's own `BIGSERIAL` default to fill in --
+verified by watching this fail with a real `NotNullViolation` before
+adding `FetchedValue()`, then re-running to confirm it started passing.
+
+Tests: 8 new in `test_registry_service.py` -- `active_artifact()`
+returning `None` before registration/while still `CANDIDATE`, returning
+the activated artifact, ignoring a subsequently retired one, and (the
+data-integrity defensive case) raising `MultipleResultsFound` if two
+artifacts somehow both show as `ACTIVE` at once, since
+`promote_to_active` (4.3, next) is supposed to make that structurally
+impossible and a violation should surface loudly rather than silently
+picking one; `resolve_active_model()` falling back to baseline, resolving
+a real Poisson artifact, and raising `ValueError` for an unsupported
+`model_family`. Plus 1 new end-to-end integration test in
+`test_run_slate.py` (`test_run_slate_uses_the_active_registry_model_when_
+one_is_promoted`) that seeds a real artifact + an ACTIVE event directly,
+runs the actual real 2023-06-15 fixture slate through `run_slate()`, and
+asserts every published projection's `model_version` matches the
+artifact's `fitted_model_version`, not the baseline's -- confirmed via
+`git stash` that this specific test fails against the pre-wiring
+`run_slate.py` (asserting `'k-model-0.1.0' == 'poisson-regression...'`
+and failing exactly as expected) before restoring the fix.
+
+Verified: 373 tests passing (364 + 9) against a fully fresh scratch
+database (`alembic downgrade base` / `upgrade head` / `check` all clean
+through the new migration), ruff/mypy/guardrails clean.
+
+Remaining limitation: nothing can reach `ACTIVE` yet through any real
+code path -- this stage proves the live pipeline *would* correctly use
+an active artifact if one existed, using test-seeded registry events,
+but there is still no `promote_to_active()` for a human to actually call.
+That's 4.3, next.
