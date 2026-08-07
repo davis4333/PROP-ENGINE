@@ -11,7 +11,10 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DBAPIError
 
 from cassandra.db.models.identity import Game, Team
 from cassandra.db.models.raw import RawFinalBoxScore, RawLineup, RawProbablePitcher
@@ -244,6 +247,80 @@ def test_rerun_at_same_cutoff_creates_a_new_snapshot_never_mutates_the_first(db_
     assert first.snapshot_id != second.snapshot_id
     assert first.status == "frozen"
     assert second.status == "frozen"
+
+
+def test_frozen_snapshot_update_is_blocked_by_the_immutability_trigger(db_session):
+    _make_source(db_session, "src-snap-immut-update")
+    _make_game(db_session, game_id="pit-game-snap-immut-update", mlb_game_pk=GAME_PK + 2)
+    snapshot, _ = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    db_session.flush()
+    with pytest.raises(DBAPIError, match="append-only"):
+        db_session.execute(
+            text("UPDATE snapshots SET notes = 'hacked' WHERE snapshot_id = :id"),
+            {"id": snapshot.snapshot_id},
+        )
+
+
+def test_frozen_snapshot_delete_is_blocked(db_session):
+    _make_source(db_session, "src-snap-immut-delete")
+    _make_game(db_session, game_id="pit-game-snap-immut-delete", mlb_game_pk=GAME_PK + 3)
+    snapshot, _ = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    db_session.flush()
+    with pytest.raises(DBAPIError):
+        db_session.execute(
+            text("DELETE FROM snapshots WHERE snapshot_id = :id"),
+            {"id": snapshot.snapshot_id},
+        )
+
+
+def test_snapshot_raw_refs_update_is_blocked(db_session):
+    _make_source(db_session, "src-snap-refs-immut")
+    _make_game(db_session, game_id="pit-game-snap-refs-immut", mlb_game_pk=GAME_PK + 4)
+    _probable(
+        db_session,
+        source_id="src-snap-refs-immut",
+        mlb_game_pk=GAME_PK + 4,
+        player_mlb_id=6002,
+        team_mlb_id=HOME_TEAM_MLB_ID,
+        observed_at=BEFORE,
+        ingested_at=BEFORE,
+    )
+    snapshot, _ = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    db_session.flush()
+    ref = db_session.execute(
+        text("SELECT snapshot_id, raw_table, raw_id FROM snapshot_raw_refs WHERE snapshot_id = :id LIMIT 1"),
+        {"id": snapshot.snapshot_id},
+    ).first()
+    assert ref is not None, "expected at least one snapshot_raw_refs row for this snapshot"
+    with pytest.raises(DBAPIError, match="append-only"):
+        db_session.execute(
+            text(
+                "UPDATE snapshot_raw_refs SET natural_key = 'hacked' "
+                "WHERE snapshot_id = :sid AND raw_table = :rt AND raw_id = :rid"
+            ),
+            {"sid": ref.snapshot_id, "rt": ref.raw_table, "rid": ref.raw_id},
+        )
+
+
+def test_snapshot_data_quality_update_is_blocked(db_session):
+    _make_source(db_session, "src-snap-dq-immut")
+    _make_game(db_session, game_id="pit-game-snap-dq-immut", mlb_game_pk=GAME_PK + 5)
+    snapshot, _ = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    db_session.flush()
+    dq_id = uuid.uuid4()
+    db_session.execute(
+        text(
+            "INSERT INTO snapshot_data_quality (id, snapshot_id, check_name, status) "
+            "VALUES (:id, :sid, 'test_check', 'warn')"
+        ),
+        {"id": dq_id, "sid": snapshot.snapshot_id},
+    )
+    db_session.flush()
+    with pytest.raises(DBAPIError, match="append-only"):
+        db_session.execute(
+            text("UPDATE snapshot_data_quality SET detail = 'hacked' WHERE id = :id"),
+            {"id": dq_id},
+        )
 
 
 def test_final_box_score_value_never_appears_in_computed_features(db_session):
