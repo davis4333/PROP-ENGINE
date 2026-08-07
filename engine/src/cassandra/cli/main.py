@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from cassandra.config import operating_tz
 from cassandra.db.models.historical import BackfillRun
+from cassandra.db.models.registry import ModelArtifact, ModelRegistryEvent
 from cassandra.db.session import session_scope
 from cassandra.historical.backfill import (
     BackfillConfig,
@@ -38,6 +39,11 @@ from cassandra.historical.evaluation import evaluate_model, write_evaluation_rep
 from cassandra.models.baseline import BaselinePoissonModel
 from cassandra.orchestration.run_slate import grade_slate_run, ingest_slate, run_slate
 from cassandra.pit.snapshot_builder import build_snapshot
+from cassandra.registry.service import (
+    promote_to_active,
+    resolve_active_model,
+    rollback_active,
+)
 
 app = typer.Typer(help="Cassandra operator CLI -- ingest, snapshot, run-slate, grade.")
 
@@ -725,6 +731,117 @@ def train_final_model_cmd(
     else:
         typer.echo("not registered (pass --register to register as CANDIDATE) -- artifact created only.")
     typer.echo("No automatic promotion -- CANDIDATE is the only status this command can reach.")
+
+
+@app.command(name="promote-model")
+def promote_model_cmd(
+    artifact_id: str = typer.Option(..., "--artifact-id"),
+    operator: str = typer.Option(..., "--operator", help="Your identity, recorded on the registry event."),
+    reason: str | None = typer.Option(None, "--reason"),
+) -> None:
+    """Promotes a registered CANDIDATE artifact to ACTIVE -- the live
+    pipeline (orchestration/run_slate.py's PROJECT stage) will use it for
+    every run_slate() call from this point on, via
+    registry/service.py's resolve_active_model(). Atomically retires
+    whatever was previously ACTIVE in the same call. This is the one and
+    only way any artifact ever reaches ACTIVE -- there is no automatic
+    promotion anywhere in this codebase; running this command with a
+    real --operator identity IS the human approval the mission directive
+    requires."""
+    with session_scope() as session:
+        artifact = session.get(ModelArtifact, artifact_id)
+        if artifact is None:
+            typer.echo(f"No artifact found with artifact_id={artifact_id}")
+            raise typer.Exit(code=1)
+        typer.echo(
+            f"Promoting artifact_id={artifact_id} (model_family={artifact.model_family}, "
+            f"trained_at={artifact.trained_at}, training_metrics={artifact.training_metrics}) to ACTIVE..."
+        )
+        try:
+            event = promote_to_active(session, artifact_id=artifact_id, operator=operator, reason=reason)
+        except ValueError as exc:
+            typer.echo(f"Cannot promote: {exc}")
+            raise typer.Exit(code=1) from exc
+    typer.echo(f"Promoted. registry_event_id={event.event_id}")
+
+
+@app.command(name="rollback-model")
+def rollback_model_cmd(
+    operator: str = typer.Option(..., "--operator", help="Your identity, recorded on the registry event."),
+    reason: str = typer.Option(..., "--reason", help="Why this rollback is happening."),
+    to_artifact_id: str | None = typer.Option(
+        None,
+        "--to-artifact-id",
+        help="Reactivate this specific prior artifact instead of falling back to the permanent baseline.",
+    ),
+) -> None:
+    """Retires whatever is currently ACTIVE (marked ROLLED_BACK, not
+    RETIRED -- this is an emergency reversal). With no --to-artifact-id,
+    the live pipeline falls straight back to the permanent, unmodified
+    baseline on its very next run_slate() call -- no other artifact
+    needs to exist for this to be safe."""
+    with session_scope() as session:
+        try:
+            event = rollback_active(session, operator=operator, reason=reason, to_artifact_id=to_artifact_id)
+        except ValueError as exc:
+            typer.echo(f"Cannot roll back: {exc}")
+            raise typer.Exit(code=1) from exc
+    if event is None:
+        typer.echo("Nothing was ACTIVE -- nothing to roll back. The permanent baseline is already serving.")
+        return
+    typer.echo(f"Rolled back. registry_event_id={event.event_id}")
+    if to_artifact_id:
+        typer.echo(f"Reactivated artifact_id={to_artifact_id}.")
+    else:
+        typer.echo("Live pipeline now falls back to the permanent baseline.")
+
+
+@app.command(name="model-status")
+def model_status_cmd(
+    history_limit: int = typer.Option(20, "--history-limit", help="How many recent registry events to show."),
+) -> None:
+    """Shows the model currently serving live predictions (the ACTIVE
+    registry artifact, or the permanent baseline if none is ACTIVE --
+    registry/service.py's resolve_active_model(), the exact function
+    orchestration/run_slate.py itself calls) plus a short history of
+    recent registry events, so an operator can see the current state and
+    promotion/rollback history without querying the database directly."""
+    with session_scope() as session:
+        resolved = resolve_active_model(session)
+        if resolved.active_artifact_id is None:
+            typer.echo(f"ACTIVE: permanent baseline (model_version={resolved.model_version})")
+        else:
+            artifact = session.get(ModelArtifact, resolved.active_artifact_id)
+            if artifact is None:
+                raise RuntimeError(
+                    f"active_artifact_id={resolved.active_artifact_id} but no matching row exists -- "
+                    "should be structurally impossible (model_artifacts is append-only)"
+                )
+            typer.echo(
+                f"ACTIVE: artifact_id={artifact.artifact_id}\n"
+                f"  model_version={resolved.model_version}\n"
+                f"  trained_at={artifact.trained_at}\n"
+                f"  training_dataset_id={artifact.training_dataset_id}\n"
+                f"  training_metrics={artifact.training_metrics}"
+            )
+
+        events = (
+            session.execute(
+                select(ModelRegistryEvent).order_by(ModelRegistryEvent.sequence.desc()).limit(history_limit)
+            )
+            .scalars()
+            .all()
+        )
+        if events:
+            typer.echo(f"\nRecent registry events (newest first, up to {history_limit}):")
+            for e in events:
+                typer.echo(
+                    f"  {e.occurred_at.isoformat()}  {e.artifact_id}  "
+                    f"{e.from_status or '(none)'} -> {e.to_status}  by {e.operator}"
+                    + (f"  ({e.reason})" if e.reason else "")
+                )
+        else:
+            typer.echo("\nNo registry events yet.")
 
 
 if __name__ == "__main__":

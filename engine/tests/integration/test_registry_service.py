@@ -21,9 +21,11 @@ from cassandra.registry.service import (
     compute_artifact_checksum,
     create_model_artifact,
     current_status,
+    promote_to_active,
     record_registry_event,
     register_as_candidate,
     resolve_active_model,
+    rollback_active,
 )
 
 _BASE_KWARGS = {
@@ -272,3 +274,146 @@ def test_resolve_active_model_raises_for_an_unsupported_family(db_session):
     )
     with pytest.raises(ValueError, match="some-future-family"):
         resolve_active_model(db_session)
+
+
+def test_promote_to_active_requires_registration_first(db_session):
+    artifact = _create(db_session)  # never registered -- status is None
+    with pytest.raises(ValueError, match="CANDIDATE"):
+        promote_to_active(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+
+
+def test_promote_to_active_activates_a_candidate(db_session):
+    artifact = _create(db_session)
+    register_as_candidate(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+
+    event = promote_to_active(db_session, artifact_id=artifact.artifact_id, operator="tyler", reason="v1")
+
+    assert event.to_status == "ACTIVE"
+    assert event.from_status == "CANDIDATE"
+    assert current_status(db_session, artifact.artifact_id) == "ACTIVE"
+    resolved = active_artifact(db_session)
+    assert resolved is not None
+    assert resolved.artifact_id == artifact.artifact_id
+
+
+def test_promote_to_active_atomically_retires_the_previous_active_artifact(db_session):
+    first = _create(db_session, model_code_version="v-first")
+    register_as_candidate(db_session, artifact_id=first.artifact_id, operator="tyler")
+    promote_to_active(db_session, artifact_id=first.artifact_id, operator="tyler")
+
+    second = _create(db_session, model_code_version="v-second")
+    register_as_candidate(db_session, artifact_id=second.artifact_id, operator="tyler")
+    promote_to_active(db_session, artifact_id=second.artifact_id, operator="tyler")
+
+    assert current_status(db_session, first.artifact_id) == "RETIRED"
+    assert current_status(db_session, second.artifact_id) == "ACTIVE"
+    # Never two ACTIVE at once, even mid-promotion within the same call --
+    # active_artifact() would raise MultipleResultsFound if this broke.
+    resolved = active_artifact(db_session)
+    assert resolved is not None
+    assert resolved.artifact_id == second.artifact_id
+
+
+def test_promote_to_active_refuses_an_already_active_artifact(db_session):
+    artifact = _create(db_session)
+    register_as_candidate(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+    promote_to_active(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+
+    with pytest.raises(ValueError, match="ACTIVE"):
+        promote_to_active(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+
+
+def test_promote_to_active_refuses_an_unsupported_family(db_session):
+    artifact = _create(db_session, model_family="some-future-family")
+    register_as_candidate(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+
+    with pytest.raises(ValueError, match="some-future-family"):
+        promote_to_active(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+
+
+def test_promote_to_active_refuses_an_unknown_artifact_id(db_session):
+    with pytest.raises(ValueError, match="no artifact found"):
+        promote_to_active(db_session, artifact_id="artifact_does_not_exist", operator="tyler")
+
+
+def test_rollback_active_is_a_noop_when_nothing_is_active(db_session):
+    assert rollback_active(db_session, operator="tyler", reason="just checking") is None
+
+
+def test_rollback_active_falls_back_to_baseline_by_default(db_session):
+    artifact = _create(db_session)
+    register_as_candidate(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+    promote_to_active(db_session, artifact_id=artifact.artifact_id, operator="tyler")
+
+    event = rollback_active(db_session, operator="tyler", reason="bad predictions in prod")
+
+    assert event is not None
+    assert event.to_status == "ROLLED_BACK"
+    assert event.artifact_id == artifact.artifact_id
+    assert current_status(db_session, artifact.artifact_id) == "ROLLED_BACK"
+    assert active_artifact(db_session) is None
+    resolved = resolve_active_model(db_session)
+    assert resolved.active_artifact_id is None  # baseline fallback
+
+
+def test_rollback_active_can_reactivate_a_specific_prior_artifact(db_session):
+    first = _create(db_session, model_code_version="v-first")
+    register_as_candidate(db_session, artifact_id=first.artifact_id, operator="tyler")
+    promote_to_active(db_session, artifact_id=first.artifact_id, operator="tyler")
+
+    second = _create(db_session, model_code_version="v-second")
+    register_as_candidate(db_session, artifact_id=second.artifact_id, operator="tyler")
+    promote_to_active(db_session, artifact_id=second.artifact_id, operator="tyler")
+    # first is now RETIRED (superseded by second's promotion)
+
+    event = rollback_active(
+        db_session, operator="tyler", reason="v-second regressed", to_artifact_id=first.artifact_id
+    )
+
+    assert event is not None
+    assert event.artifact_id == first.artifact_id
+    assert event.to_status == "ACTIVE"
+    assert event.from_status == "RETIRED"
+    assert current_status(db_session, second.artifact_id) == "ROLLED_BACK"
+    assert current_status(db_session, first.artifact_id) == "ACTIVE"
+    resolved = active_artifact(db_session)
+    assert resolved is not None
+    assert resolved.artifact_id == first.artifact_id
+
+
+def test_rollback_active_refuses_reactivating_a_rejected_artifact(db_session):
+    currently_active = _create(db_session, model_code_version="v-active")
+    register_as_candidate(db_session, artifact_id=currently_active.artifact_id, operator="tyler")
+    promote_to_active(db_session, artifact_id=currently_active.artifact_id, operator="tyler")
+
+    rejected = _create(db_session, model_code_version="v-rejected")
+    record_registry_event(
+        db_session,
+        artifact_id=rejected.artifact_id,
+        event_type="rejected",
+        to_status="REJECTED",
+        operator="tyler",
+        reason="never should have been trained on this dataset",
+        from_status=None,
+    )
+
+    # A human explicitly rejected this artifact -- rollback must not be
+    # able to silently resurrect it.
+    with pytest.raises(ValueError, match="REJECTED"):
+        rollback_active(db_session, operator="tyler", reason="test", to_artifact_id=rejected.artifact_id)
+    # The rollback of currently_active still happened -- only the
+    # reactivation half was refused.
+    assert current_status(db_session, currently_active.artifact_id) == "ROLLED_BACK"
+
+
+def test_rollback_active_refuses_reactivating_a_never_registered_artifact(db_session):
+    currently_active = _create(db_session, model_code_version="v-active")
+    register_as_candidate(db_session, artifact_id=currently_active.artifact_id, operator="tyler")
+    promote_to_active(db_session, artifact_id=currently_active.artifact_id, operator="tyler")
+
+    never_registered = _create(db_session, model_code_version="v-unregistered")
+
+    with pytest.raises(ValueError, match="None"):
+        rollback_active(
+            db_session, operator="tyler", reason="test", to_artifact_id=never_registered.artifact_id
+        )

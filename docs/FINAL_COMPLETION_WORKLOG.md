@@ -1050,3 +1050,84 @@ code path -- this stage proves the live pipeline *would* correctly use
 an active artifact if one existed, using test-seeded registry events,
 but there is still no `promote_to_active()` for a human to actually call.
 That's 4.3, next.
+
+### 4.3 -- promotion/rollback CLI actions (done)
+
+The registry could represent `ACTIVE`, and the live pipeline would
+correctly serve whatever was `ACTIVE` (4.2) -- but nothing could ever
+actually make an artifact `ACTIVE` or undo that. This closes the loop:
+a human can now train, promote, and (if needed) roll back a model with
+three CLI commands, each requiring an explicit `--operator` identity and
+none of them reachable from any automated code path.
+
+`registry/service.py` gained:
+- `promote_to_active(artifact_id, operator, reason=None)`: refuses
+  unless the artifact's current status is `CANDIDATE`/`APPROVED`
+  (`PROMOTABLE_STATUSES`) and its `model_family` is one
+  `resolve_active_model()` can actually reconstruct (both fail loudly at
+  promotion time rather than silently breaking the next `run_slate()`
+  call) -- then atomically retires whatever was previously `ACTIVE` (if
+  anything) and activates the new one, both in the same transaction, so
+  `active_artifact()`'s "never more than one `ACTIVE`" invariant (4.2)
+  is never violated even transiently.
+- `rollback_active(operator, reason, to_artifact_id=None)`: marks
+  whatever's currently `ACTIVE` as `ROLLED_BACK` (a distinct status from
+  `RETIRED` -- an emergency reversal, not a routine supersession).
+  `to_artifact_id=None` (the default) leaves nothing `ACTIVE`, so
+  `resolve_active_model()` falls straight back to the permanent baseline
+  on its very next call -- no second artifact has to exist for a
+  rollback to be safe. Passing `to_artifact_id` reactivates that specific
+  prior artifact instead (must currently be
+  `CANDIDATE`/`APPROVED`/`RETIRED`/`ROLLED_BACK` --
+  `ROLLBACK_REACTIVATABLE_STATUSES` -- refusing e.g. a `REJECTED`
+  artifact a human explicitly rejected). `reason` is required here
+  (unlike `promote_to_active`'s optional one) -- a rollback should always
+  be explained. Returns `None` if nothing was `ACTIVE` to begin with (a
+  harmless no-op, not an error).
+
+CLI (`cli/main.py`):
+- `cassandra promote-model --artifact-id ... --operator ... [--reason ...]`
+- `cassandra rollback-model --operator ... --reason ... [--to-artifact-id ...]`
+- `cassandra model-status [--history-limit N]` -- prints whichever model
+  is currently serving live predictions (via the exact same
+  `resolve_active_model()` `run_slate()` itself calls, not a parallel
+  re-derivation) plus recent registry events, so an operator can check
+  state without querying the database directly.
+
+Manually smoke-tested end to end against the real scratch database (not
+just the automated test suite): `model-status` with nothing active ->
+`promote-model` on a real artifact left over from earlier
+`train-final-model` test runs -> `model-status` showing it `ACTIVE` with
+real training metrics -> `rollback-model` -> `model-status` confirming
+baseline fallback again. Caught and fixed a real cross-test-isolation
+risk this surfaced: since `promote_to_active`/`rollback_active` **commit
+for real** (same reasoning as 4.1/train_final_model.py's own tests --
+these are genuine database mutations, not something a rolled-back
+`db_session` fixture could safely exercise for an end-to-end CLI smoke
+test), leaving an artifact promoted after the manual smoke test would
+have made every subsequent `db_session`-based test see that same real
+`ACTIVE` artifact under Postgres's READ COMMITTED isolation (committed
+data from one session is visible to new transactions) -- silently
+changing which model every other `run_slate()`-touching test exercises.
+Rolled it back via the CLI itself before re-running the suite,
+confirming all 384 tests still pass afterward.
+
+Tests: 11 new in `test_registry_service.py` -- `promote_to_active`
+requiring registration first, activating a real `CANDIDATE`, atomically
+retiring a previous `ACTIVE` artifact on the next promotion, refusing an
+already-`ACTIVE` artifact, refusing an unsupported family, refusing an
+unknown `artifact_id`; `rollback_active` being a no-op when nothing's
+active, falling back to baseline by default, reactivating a specific
+prior artifact, and refusing to reactivate a `REJECTED` or never-
+registered target.
+
+Verified: 384 tests passing (373 + 11) against the scratch database
+(confirmed clean after the manual CLI smoke test's own real commits were
+rolled back), ruff/mypy/guardrails clean.
+
+Remaining limitation: **the full loop the directive asked for now
+actually works end to end** -- train, evaluate, register, promote, serve
+live, and roll back, all real, all human-gated. What's still not built:
+a shadow-mode runner (evaluating a candidate against live slates without
+its predictions ever reaching `projections`/`grades`) and an Admin-page
+view of any of this (CLI-only so far -- 4.4, next).

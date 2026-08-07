@@ -54,7 +54,7 @@ from cassandra.models.baseline import BaselinePoissonModel
 from cassandra.models.interface import StrikeoutModel
 from cassandra.models.poisson_regression import PoissonRegressionModel
 
-REGISTRY_SERVICE_VERSION = "registry-service-0.2.0"
+REGISTRY_SERVICE_VERSION = "registry-service-0.3.0"
 
 # model_family values resolve_active_model() knows how to reconstruct.
 # Kept explicit and checked (rather than a bare try/except around a
@@ -262,6 +262,122 @@ def active_artifact(session: Session) -> ModelArtifact | None:
     return session.execute(stmt).scalar_one_or_none()
 
 
+# Statuses promote_to_active() will accept as a promotion's starting
+# point. Deliberately excludes ACTIVE (already active -- promoting it
+# again would just retire-then-reactivate the same artifact, a
+# meaningless no-op event pair), RETIRED/REJECTED/ROLLED_BACK (all
+# terminal -- an artifact that left ACTIVE status once shouldn't silently
+# re-enter it through the normal promotion path; use rollback_active()'s
+# explicit to_artifact_id if reactivating a specific prior artifact is
+# genuinely intended), and None (never registered at all).
+PROMOTABLE_STATUSES = ("CANDIDATE", "APPROVED")
+
+# Statuses rollback_active()'s to_artifact_id may reactivate from --
+# broader than PROMOTABLE_STATUSES since a rollback's whole point is
+# reaching back to something that already left ACTIVE (RETIRED or
+# ROLLED_BACK), not just a fresh CANDIDATE.
+ROLLBACK_REACTIVATABLE_STATUSES = ("CANDIDATE", "APPROVED", "RETIRED", "ROLLED_BACK")
+
+
+def promote_to_active(
+    session: Session, *, artifact_id: str, operator: str, reason: str | None = None
+) -> ModelRegistryEvent:
+    """Promotes `artifact_id` to ACTIVE, atomically retiring whatever was
+    previously ACTIVE (if anything) in the SAME transaction -- the
+    directive's "exactly one ACTIVE model at a time" requirement,
+    enforced here rather than left to convention (see active_artifact()'s
+    own docstring for why that matters). Refuses to promote an artifact
+    that isn't currently CANDIDATE/APPROVED (see PROMOTABLE_STATUSES) or
+    whose model_family resolve_active_model() can't actually reconstruct
+    -- both would otherwise silently break every future run_slate() call
+    with a clear error at promotion time instead."""
+    artifact = session.get(ModelArtifact, artifact_id)
+    if artifact is None:
+        raise ValueError(f"no artifact found with artifact_id={artifact_id!r}")
+    status = current_status(session, artifact_id)
+    if status not in PROMOTABLE_STATUSES:
+        raise ValueError(
+            f"cannot promote artifact {artifact_id}: current status is {status!r}, expected one of "
+            f"{PROMOTABLE_STATUSES}. An artifact must be registered "
+            "(`cassandra train-final-model --register`) before it can be promoted."
+        )
+    if artifact.model_family not in SUPPORTED_LIVE_MODEL_FAMILIES:
+        raise ValueError(
+            f"cannot promote artifact {artifact_id}: model_family {artifact.model_family!r} is not "
+            f"one resolve_active_model() can serve (supported: {SUPPORTED_LIVE_MODEL_FAMILIES})"
+        )
+
+    previous = active_artifact(session)
+    if previous is not None:
+        record_registry_event(
+            session,
+            artifact_id=previous.artifact_id,
+            event_type="retired",
+            to_status="RETIRED",
+            operator=operator,
+            reason=f"superseded by promotion of {artifact_id}",
+            from_status="ACTIVE",
+        )
+    return record_registry_event(
+        session,
+        artifact_id=artifact_id,
+        event_type="activated",
+        to_status="ACTIVE",
+        operator=operator,
+        reason=reason,
+        from_status=status,
+    )
+
+
+def rollback_active(
+    session: Session, *, operator: str, reason: str, to_artifact_id: str | None = None
+) -> ModelRegistryEvent | None:
+    """Retires whatever is currently ACTIVE, marking it ROLLED_BACK (not
+    RETIRED -- a rollback is an emergency reversal, not a routine
+    supersession). With `to_artifact_id=None` (the common case), nothing
+    new becomes ACTIVE -- resolve_active_model() falls straight back to
+    the permanent baseline on its very next call, no second artifact
+    required. With `to_artifact_id` set, that specific prior artifact
+    (must currently be CANDIDATE/APPROVED/RETIRED/ROLLED_BACK -- see
+    ROLLBACK_REACTIVATABLE_STATUSES) is reactivated in the same call.
+
+    Returns None if nothing was ACTIVE to begin with -- a harmless no-op,
+    not an error, since rolling back an already-inactive system is safe.
+    `reason` is required (unlike promote_to_active()'s optional one): a
+    rollback is by definition an unplanned reversal and should always be
+    explained for whoever reads the registry history later."""
+    current = active_artifact(session)
+    if current is None:
+        return None
+    rollback_event = record_registry_event(
+        session,
+        artifact_id=current.artifact_id,
+        event_type="rolled_back",
+        to_status="ROLLED_BACK",
+        operator=operator,
+        reason=reason,
+        from_status="ACTIVE",
+    )
+    if to_artifact_id is None:
+        return rollback_event
+
+    target_status = current_status(session, to_artifact_id)
+    if target_status not in ROLLBACK_REACTIVATABLE_STATUSES:
+        raise ValueError(
+            f"cannot roll back to artifact {to_artifact_id}: current status is {target_status!r}, "
+            f"expected one of {ROLLBACK_REACTIVATABLE_STATUSES}"
+        )
+    return record_registry_event(
+        session,
+        artifact_id=to_artifact_id,
+        event_type="activated",
+        to_status="ACTIVE",
+        operator=operator,
+        reason=f"reactivated during rollback: {reason}",
+        from_status=target_status,
+    )
+
+
 @dataclass(frozen=True)
 class ResolvedModel:
     """What orchestration/run_slate.py's PROJECT stage actually needs:
@@ -306,14 +422,18 @@ def resolve_active_model(session: Session) -> ResolvedModel:
 
 
 __all__ = [
+    "PROMOTABLE_STATUSES",
     "REGISTRY_SERVICE_VERSION",
+    "ROLLBACK_REACTIVATABLE_STATUSES",
     "SUPPORTED_LIVE_MODEL_FAMILIES",
     "ResolvedModel",
     "active_artifact",
     "compute_artifact_checksum",
     "create_model_artifact",
     "current_status",
+    "promote_to_active",
     "record_registry_event",
     "register_as_candidate",
     "resolve_active_model",
+    "rollback_active",
 ]

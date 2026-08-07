@@ -39,12 +39,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from cassandra.db.base import Base
 
-# The full state vocabulary the registry supports. Only "registered" (->
-# CANDIDATE) is actually wired up to a CLI action today
-# (`cassandra train-final-model --register`, historical/train_final_model.py)
-# -- promotion/shadow/rollback actions are real future work, not invented
-# here; see docs/FINAL_COMPLETION_WORKLOG.md's 3B entry for why the rest
-# of the vocabulary exists now even though nothing calls it yet.
+# The full state vocabulary the registry supports. "registered" (->
+# CANDIDATE, `cassandra train-final-model --register`), "activated"/
+# "retired" (-> ACTIVE/RETIRED, `cassandra promote-model`), and
+# "rolled_back"/"activated" (-> ROLLED_BACK/ACTIVE, `cassandra
+# rollback-model`) are wired to real CLI actions (registry/service.py) --
+# SHADOW/APPROVED/REJECTED remain schema-supported but unreached by any
+# code path (no shadow-mode runner or approval-gate action exists yet);
+# see docs/FINAL_COMPLETION_WORKLOG.md's Phase 4 entries.
 MODEL_REGISTRY_STATES = (
     "CANDIDATE",
     "SHADOW",
