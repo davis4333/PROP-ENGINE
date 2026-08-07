@@ -936,3 +936,47 @@ nobody deliberately broke the engine (e.g. an unreachable
 than the frontend surviving alone. `CURRENT_STATE_AUDIT.md`'s own 2A
 entry is updated to reflect this exact partial state, not overclaimed as
 fully verified.
+
+## Phase 4 -- closing the self-learning loop (Tyler's explicit request:
+"build what it needs... to make the best and most accurate projections &
+so we can get the self learning loop ball rolling")
+
+Phase 3 built artifact storage and a registry that could represent
+CANDIDATE, but nothing could ever reach ACTIVE and the live pipeline
+never looked at the registry at all -- training a challenger was a dead
+end. This phase wires it up: a promoted model actually serves live
+predictions, with a human-gated promotion/rollback action and the
+permanent baseline as a guaranteed fallback.
+
+### 4.1 -- numpy-free model split (prerequisite, done)
+
+Confirmed a real architectural conflict before writing anything else:
+`historical/challenger_poisson.py`'s `PoissonRegressionModel.predict()`
+used `np.array`/`np.dot` for what is just a length-5 dot product, and the
+whole module does a top-level `import numpy as np` -- so reconstructing
+and serving a fitted artifact from the live pipeline would have silently
+made `numpy` a hard live-deployment dependency, contradicting this
+project's own established boundary ("kept out of the live pipeline's
+core dependencies," stated in `challenger_poisson.py`'s original
+docstring and `CURRENT_STATE_AUDIT.md`).
+
+Fix: split the model class out into a new `models/poisson_regression.py`
+-- numpy-free (`design_row()`'s dot product is a plain Python `sum()`
+now), safe to import from anywhere, including the live pipeline.
+`historical/challenger_poisson.py` keeps only the genuinely numpy-
+dependent IRLS fit (`fit_poisson_regression`) and re-exports everything
+from the new module, so every existing `from
+cassandra.historical.challenger_poisson import ...` call site
+(`walk_forward.py`, `train_final_model.py`, existing tests) is
+byte-for-byte unaffected -- zero call sites needed to change.
+
+Tests: 7 new in `tests/unit/test_poisson_regression.py` -- `design_row()`
+shape/defaults, three hand-computed `predict()` values (not just re-
+deriving the formula under test), the eta-clipping behavior, CDF
+validity, and (the actual point of this split) a subprocess test that
+imports only `cassandra.models.poisson_regression` in a fresh Python
+process and asserts `numpy` never enters `sys.modules` -- proving the
+live-safe boundary for real rather than by inspection.
+
+Verified: 364 tests passing (357 + 7) against the scratch database,
+ruff/mypy/guardrails clean.
