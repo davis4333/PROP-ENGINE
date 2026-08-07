@@ -492,10 +492,42 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   same reduced `expected_bf`/`recent_k_rate`/`rest_days` set it always
   has, deliberately matching the permanent baseline's inputs for a fair
   comparison) -- a real product/modeling decision, not an oversight.
+- **Durable model artifacts + a model registry are real and implemented
+  (Phase 3)**: `db/models/registry.py`'s `model_artifacts`/
+  `model_registry_events` tables (migration `e076e6061a06`) -- append-only
+  at the database grant level, same `cassandra_block_immutable_mutation`
+  trigger + `REVOKE UPDATE, DELETE, TRUNCATE` pattern as `raw_*`/
+  `projections`/`grades`/`audit_events`, verified empirically (a real
+  UPDATE/DELETE/TRUNCATE attempt against either table fails). No mutable
+  status column anywhere: `registry/service.py`'s `current_status()`
+  always derives an artifact's status from its latest
+  `model_registry_events` row, the same "current" pattern `projections`
+  already uses (ADR 0002). `cassandra train-final-model --dataset-id
+  ds_... --family poisson-regression --operator <name> [--register]`
+  (`historical/train_final_model.py`) fits a FINAL (non-walk-forward)
+  Poisson challenger on every eligible row of a frozen dataset, writes a
+  durable artifact (coefficients, coefficient order, intercept,
+  preprocessing/regularization rules, full training-dataset provenance,
+  source git SHA, a reproducibility checksum, dependency versions,
+  in-sample training metrics, and a pointer to its own
+  `HISTORICAL_RECONSTRUCTION`-labeled evaluation report), then genuinely
+  proves the round-trip: a separate committed transaction re-reads the
+  row, reconstructs a model from it, and the command raises if either the
+  reloaded coefficients or the reloaded model's re-evaluated metrics
+  don't exactly match the original fit. Registers as `CANDIDATE` only
+  with `--register`. **No automatic promotion anywhere**: `CANDIDATE` is
+  the only status any code in this build can reach --
+  `MODEL_REGISTRY_STATES` defines the full `SHADOW`/`APPROVED`/`ACTIVE`/
+  `RETIRED`/`REJECTED`/`ROLLED_BACK` vocabulary and the schema/CHECK
+  constraint supports it, but no promotion/shadow/rollback action is
+  wired to anything -- reaching those states requires code that doesn't
+  exist yet, not a flag or a config value. The registry is also not yet
+  wired into the live decision engine/`run_slate()` at all (both still
+  only ever use the permanent, unmodified `models/baseline.py` model,
+  same as before this phase) -- deliberately out of scope for this pass;
+  see this document's own "Next smallest task" section.
 - **Not yet built**: negative-binomial/gradient-boosted challenger
-  alternatives, a model registry (each run's report is frozen and
-  versioned individually, but there's no index across runs or promotion-
-  decision tracking). See `docs/TRAINING_READINESS_REPORT.md` for the
+  alternatives. See `docs/TRAINING_READINESS_REPORT.md` for the
   full "what's still not built" list. Also not yet collected/implemented
   (reported honestly, not silently omitted -- every dataset manifest/row
   records these as unavailable, and `audit-historical-coverage` surfaces
@@ -735,3 +767,16 @@ work (ADR 0007's fuller admin action state machine, calibrating
 handbook's explicitly unresolved product decisions this build built
 around rather than guessed at — each is a clean adapter/seam swap, not a
 rearchitecture.
+
+A model artifact + registry system now exists (`db/models/registry.py`,
+`registry/service.py`, `cassandra train-final-model`), but nothing wires
+it into the live pipeline yet — `decision/engine.py`/`orchestration/
+run_slate.py` still only ever call the permanent, unmodified baseline.
+The natural next slice: an admin-triggerable promotion action (CANDIDATE
+→ ACTIVE, requiring an authenticated human per the mission directive),
+enforcing exactly one ACTIVE model at a time with the permanent baseline
+as the guaranteed fallback when none is ACTIVE, and a shadow-mode runner
+that evaluates the ACTIVE model's challenger(s) against live slates
+without their predictions ever reaching `projections`/`grades`. None of
+this was invented here — it's flagged as real, well-scoped future work,
+not guessed at silently.

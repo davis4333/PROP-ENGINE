@@ -37,17 +37,32 @@ POISSON_CHALLENGER_VERSION = "poisson-regression-challenger-0.1.0"
 # permanent baseline uses (expected_bf, recent_k_rate, rest_days), so a
 # comparison between the two isn't confounded by one model simply having
 # access to more inputs than the other.
-_DEFAULT_REST_DAYS = 5.0  # a typical starter's rest -- used only when rest_days is null
+DEFAULT_REST_DAYS = 5.0  # a typical starter's rest -- used only when rest_days is null
 RIDGE_LAMBDA = 1.0
 MAX_IRLS_ITERATIONS = 25
 CONVERGENCE_TOL = 1e-8
+
+# Names _design_row()'s positions, in order -- registry/service.py's
+# durable model artifacts store fitted coefficients alongside this list
+# (db/models/registry.py's `coefficient_order`) so a stored artifact is
+# self-describing without needing this module's source to interpret it.
+# Any change to _design_row's shape must update this tuple in lockstep --
+# see tests/unit/test_challenger_poisson.py's coverage for the two
+# staying in sync.
+COEFFICIENT_NAMES = (
+    "intercept",
+    "log1p_expected_bf",
+    "recent_k_rate",
+    "rest_days",
+    "rest_days_missing",
+)
 
 
 def _design_row(row: dict[str, Any]) -> list[float]:
     expected_bf = float(row.get("expected_bf") or 0.0)
     recent_k_rate = float(row.get("recent_k_rate") or 0.0)
     rest_days = row.get("rest_days")
-    rest_days_value = float(rest_days) if rest_days is not None else _DEFAULT_REST_DAYS
+    rest_days_value = float(rest_days) if rest_days is not None else DEFAULT_REST_DAYS
     rest_days_missing = 1.0 if rest_days is None else 0.0
     return [
         1.0,  # intercept
@@ -123,7 +138,12 @@ def fit_poisson_regression(rows: list[dict[str, Any]]) -> PoissonRegressionModel
 
 
 __all__ = [
+    "COEFFICIENT_NAMES",
+    "CONVERGENCE_TOL",
+    "DEFAULT_REST_DAYS",
+    "MAX_IRLS_ITERATIONS",
     "POISSON_CHALLENGER_VERSION",
+    "RIDGE_LAMBDA",
     "PoissonRegressionModel",
     "fit_poisson_regression",
 ]

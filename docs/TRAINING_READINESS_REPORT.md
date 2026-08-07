@@ -138,11 +138,17 @@ caveats on that result.
 1. **Player identity resolution hasn't run for backfilled pitchers** —
    `players` is empty in this pass, so pitcher handedness (a spec'd
    pregame feature) isn't available in any dataset row.
-2. **A model registry.** Each walk-forward run writes its own frozen
-   comparison-report JSON (versioned by dataset_id + model_version), but
-   there's no index/registry tying multiple runs together, tracking
-   shadow-mode status, or recording a promotion decision once a human
-   makes one.
+2. **A model registry.** *(Superseded by Phase 3, after this report was
+   written — see `CURRENT_STATE_AUDIT.md`'s "Durable model artifacts + a
+   model registry" entry and `docs/FINAL_COMPLETION_WORKLOG.md`'s 3A/3B/3C
+   entries for the current, real state: `db/models/registry.py` +
+   `cassandra train-final-model` now exist. Left this paragraph
+   unmodified below as the point-in-time snapshot it was at the time this
+   report was written, rather than rewriting history.)* Each walk-forward
+   run writes its own frozen comparison-report JSON (versioned by
+   dataset_id + model_version), but there's no index/registry tying
+   multiple runs together, tracking shadow-mode status, or recording a
+   promotion decision once a human makes one.
 3. **Negative-binomial or gradient-boosted challengers** — only the
    Poisson-regression family has been implemented; the mission directive
    lists negative-binomial as an alternative worth trying (Poisson

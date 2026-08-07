@@ -9,6 +9,7 @@ from cassandra.db.models import (  # noqa: F401
     pipeline,
     projection,
     raw,
+    registry,
     snapshot,
     sources,
 )

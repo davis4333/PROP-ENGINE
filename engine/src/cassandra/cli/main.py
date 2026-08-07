@@ -654,5 +654,78 @@ def train_walk_forward_challenger_cmd(
     typer.echo(f"report written: {report_path}")
 
 
+@app.command(name="train-final-model")
+def train_final_model_cmd(
+    dataset_id: str = typer.Option(..., "--dataset-id"),
+    family: str = typer.Option(..., "--family", help="Model family, e.g. 'poisson-regression'."),
+    operator: str = typer.Option(
+        ..., "--operator", help="Your identity, recorded on the artifact/registry event."
+    ),
+    output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), "--output-dir"),
+    register: bool = typer.Option(
+        False, "--register", help="Register the fitted artifact as CANDIDATE. Never auto-promotes further."
+    ),
+    notes: str | None = typer.Option(None, "--notes", help="Free-text note stored on the artifact."),
+) -> None:
+    """Loads a frozen dataset, fits a FINAL challenger on every eligible
+    row (no walk-forward holdout -- see train-walk-forward-challenger for
+    that comparison), creates a durable model artifact
+    (registry/service.py, db/models/registry.py), proves the artifact
+    reloads byte-identically from the database and re-evaluates
+    identically once reloaded, and -- only with `--register` -- registers
+    it as CANDIDATE. **No automatic promotion**: CANDIDATE is the only
+    status this command can ever reach; promoting past it requires a
+    separate, explicit, human action (mission directive Phase 3)."""
+    try:
+        from cassandra.historical.train_final_model import (
+            SUPPORTED_MODEL_FAMILIES,
+            train_final_poisson_model,
+        )
+    except ImportError as exc:
+        typer.echo(
+            "train-final-model needs the 'training' extra (numpy). "
+            f"Install with: pip install -e '.[training]'  ({exc})"
+        )
+        raise typer.Exit(code=1) from exc
+
+    if family not in SUPPORTED_MODEL_FAMILIES:
+        typer.echo(f"Unsupported --family {family!r}. Supported: {', '.join(SUPPORTED_MODEL_FAMILIES)}")
+        raise typer.Exit(code=1)
+
+    manifest = load_manifest(Path(output_dir), dataset_id)
+    data_path = Path(output_dir) / f"{dataset_id}.jsonl.gz"
+    if not data_path.exists():
+        typer.echo(f"No dataset file found: {data_path}")
+        raise typer.Exit(code=1)
+
+    rows: list[dict] = []
+    with gzip.open(data_path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json_module.loads(line))
+
+    result = train_final_poisson_model(
+        manifest=manifest,
+        rows=rows,
+        operator=operator,
+        output_dir=Path(output_dir),
+        register=register,
+        notes=notes,
+    )
+
+    typer.echo(
+        f"artifact_id={result.artifact_id}\n"
+        f"fitted_model_version={result.fitted_model_version}\n"
+        f"evaluation_id={result.evaluation_id}\n"
+        f"training_row_count={len(rows)}\n"
+        f"mae={result.training_metrics['mae']:.4f}  rmse={result.training_metrics['rmse']:.4f}  "
+        f"mean_bias={result.training_metrics['mean_bias']:.4f}"
+    )
+    if result.registered:
+        typer.echo(f"registered as CANDIDATE (registry_event_id={result.registry_event_id})")
+    else:
+        typer.echo("not registered (pass --register to register as CANDIDATE) -- artifact created only.")
+    typer.echo("No automatic promotion -- CANDIDATE is the only status this command can reach.")
+
+
 if __name__ == "__main__":
     app()

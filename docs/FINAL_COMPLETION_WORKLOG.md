@@ -751,3 +751,151 @@ provider features (Neon branching, Supabase's backup page, `pg_dump`)
 documented here for Tyler's convenience, but actually exercising a real
 backup/restore cycle against a live Neon/Supabase instance is something
 only Tyler can do (no deploy/production database access this session).
+
+## Phase 3 -- model artifact + registry system
+
+### 3A/3B/3C -- durable model artifacts, model registry, `train-final-model` CLI (implemented)
+
+Confirmed the starting state by tracing `historical/challenger_poisson.py`
+and `historical/walk_forward.py`: the existing Poisson-regression
+challenger only ever exists as an in-memory `PoissonRegressionModel`
+produced fresh by each walk-forward fold's fit -- nothing durable is ever
+written except each comparison run's own frozen `HISTORICAL_RECONSTRUCTION`
+evaluation report. There is no artifact storage, no versioned coefficient
+record, and no registry of any kind, matching `CURRENT_STATE_AUDIT.md`'s
+own prior "Not yet built... a model registry" note.
+
+**3A -- durable model artifacts.** New `model_artifacts` table
+(`db/models/registry.py`, migration `e076e6061a06`) carries every field
+the directive named: unique `artifact_id`/`fitted_model_version`,
+`model_family`/`model_code_version`, `coefficients` + `coefficient_order`
+(JSONB, self-describing -- a stored artifact never needs its fitting
+code's source to interpret it) + a redundant `intercept` column,
+`preprocessing_rules` (defaults/clipping/regularization actually in
+effect for that fit), full training-dataset provenance
+(`training_dataset_id`, `dataset_builder_version`,
+`availability_policy_version`, `feature_set_version`, `training_seasons`,
+`training_game_types`, `training_row_count`, `trained_at`),
+`source_git_sha` (`config.get_git_commit_sha()`, already built for 2B),
+`artifact_checksum` (a sha256 reproducibility hash over exactly the
+fields that determine predictions, ADR 0010's spirit applied to a model
+instead of a projection), `dependency_versions`, `training_metrics`,
+`evaluation_report_ids` (pointers into `historical/evaluation.py`'s own
+frozen report files, not a copy), `notes`, and `created_by`. Append-only
+at the database grant level: applied the FULL correct pattern (`REVOKE
+UPDATE, DELETE, TRUNCATE` + re-`GRANT UPDATE` + a `BEFORE UPDATE OR
+DELETE` trigger reusing the existing `cassandra_block_immutable_mutation`
+function) in one migration, rather than replaying the three-migration
+mistake-then-fix history `raw_*`/`projections` originally needed --
+that history's *lessons* (a bare `REVOKE UPDATE` breaks any FK-referenced
+table's inbound inserts; `TRUNCATE` needs its own separate `REVOKE`) were
+already known going in. Verified empirically against the scratch
+database, not just read from the migration file: a real `INSERT`
+succeeds, a real `UPDATE`/`DELETE`/`TRUNCATE` against `model_artifacts`
+each fail (trigger exception / permission denied), and a real `INSERT`
+into `model_registry_events` (which FK-references `model_artifacts`)
+succeeds -- proving the FK row-lock case the original `d764bb3bb5c1` fix
+exists for is actually exercised, not just theoretically covered.
+
+**3B -- model registry.** New `model_registry_events` table, also
+append-only. `MODEL_REGISTRY_STATES` defines the full directive
+vocabulary (`CANDIDATE`/`SHADOW`/`APPROVED`/`ACTIVE`/`RETIRED`/
+`REJECTED`/`ROLLED_BACK`) as a DB `CHECK` constraint. Deliberately **no
+mutable status column anywhere** -- CLAUDE.md non-negotiable #3 already
+forbids exactly this pattern (the same reasoning behind `projections`
+never getting an `is_current` flag), so an artifact's "current status"
+is always `registry/service.py`'s `current_status()` querying the latest
+event, not a stored flag. `registry/service.py` provides the general
+primitives (`create_model_artifact`, `record_registry_event`,
+`compute_artifact_checksum`, `current_status`) plus one specific
+transition, `register_as_candidate()` (event_type="registered",
+from_status=None, to_status="CANDIDATE") -- the only one any code in
+this build actually calls. `record_registry_event()` is written
+generically enough for a future promote/shadow/rollback CLI action to
+call, but nothing wires it to anything else today; this is an honest,
+documented scope boundary (the mission directive's own text was
+truncated mid-example right after describing 3C, so no further phases'
+requirements were ever provided) -- not silently invented, not silently
+omitted either, per CLAUDE.md non-negotiable #7.
+
+**3C -- `cassandra train-final-model` CLI.** `--dataset-id ds_... --family
+poisson-regression --operator <name> [--register] [--notes ...]`
+(`cli/main.py`, orchestration in `historical/train_final_model.py`).
+Loads one frozen dataset (reusing the exact same manifest/row-loading
+`train-walk-forward-challenger` already uses), fits a FINAL challenger
+on every eligible row (no walk-forward holdout -- a genuinely different
+tool than `train-walk-forward-challenger`, which answers "is this model
+family competitive" via held-out folds; this answers "freeze the actual
+artifact a human might promote"), evaluates it (necessarily in-sample,
+since a final fit has no held-out data by construction -- documented
+explicitly, not hidden), writes the durable artifact, and -- only with
+`--register` -- registers it as `CANDIDATE`. **Validates artifact
+serialization/reload for real**: after the artifact-creating transaction
+commits, a genuinely separate `session_scope()` re-queries the row
+(proving an actual JSONB round-trip, not a cached ORM object),
+reconstructs a `PoissonRegressionModel` from the reloaded coefficients,
+and the function raises `RuntimeError` if either the raw coefficients or
+a full re-run of `evaluate_model()` against the reloaded model don't
+match the original fit exactly. `train_final_poisson_model()`
+deliberately manages its own multiple `session_scope()` calls rather
+than taking a caller-supplied session (every other orchestration
+function in this codebase takes one) -- the reload step is meaningless
+unless the artifact write has actually committed first; same reasoning
+Phase 1B's `_record_failed_run` needed its own separate session for.
+**Never auto-promotes**: `CANDIDATE` is structurally the only status
+this command (or any code in this build) can reach.
+
+Also: renamed `challenger_poisson.py`'s private `_DEFAULT_REST_DAYS` to
+public `DEFAULT_REST_DAYS` and added a new public `COEFFICIENT_NAMES`
+tuple (naming `_design_row()`'s positions in order) so an artifact's
+`coefficient_order` is generated from the same source of truth the
+design row itself uses, rather than a hand-typed parallel list that
+could drift; `train_final_poisson_model()` raises if the two ever get
+out of sync in length. Added `model_artifacts`/`model_registry_events`
+to `scripts/guardrails.py`'s `IMMUTABLE_TABLES`/
+`IMMUTABLE_MODEL_CLASS_NAMES` so the same pre-commit hook that protects
+`raw_*`/`projections`/`grades`/`audit_events` from an accidental
+UPDATE/DELETE-shaped edit now also protects these two new tables.
+
+Tests: 12 new integration tests in `test_registry_service.py` (using the
+rolled-back `db_session` fixture, so nothing here permanently pollutes
+the shared database) covering artifact field population, checksum
+determinism/sensitivity, the `coefficient_order[0] == "intercept"`
+guard, real UPDATE/DELETE trigger-blocking against both new tables,
+`register_as_candidate`'s event shape, `current_status()` before and
+after registration, and `record_registry_event`'s invalid-status guard.
+6 new integration tests in `test_train_final_model.py` (against the real
+database -- `train_final_poisson_model()` manages its own committed
+sessions, so unlike the registry-service tests these do leave permanent
+rows, matching the accepted 1B precedent; each test uses a unique
+synthetic `dataset_id`) covering unregistered-by-default creation,
+registration-on-request, the reload/re-evaluation round-trip (both via
+the function's own internal validation succeeding without raising, and
+independently re-querying the artifact afterward), the evaluation report
+file actually being written, and finite/non-negative training metrics.
+
+Verified: 357 tests passing (339 + 18) against a completely fresh
+scratch database (dropped and recreated, not just reused), `alembic
+upgrade head`/`check` clean from empty, ruff/mypy/guardrails clean
+(guardrails run both against the full tracked tree and explicitly
+against just the staged Phase 3 files, confirming the new
+`session.add()`/`session.flush()` calls in `registry/service.py` don't
+false-positive the mutation-block check).
+
+Remaining limitations, all deliberate scope boundaries rather than
+oversights: (1) only `poisson-regression` is a supported `--family`
+today -- `SUPPORTED_MODEL_FAMILIES` exists as a real extension point, but
+no second family is implemented (matches the pre-existing "not yet
+built: negative-binomial/gradient-boosted challenger" gap `CURRENT_STATE_
+AUDIT.md` already documented). (2) No promotion/shadow/rollback CLI
+action exists -- the registry schema and `record_registry_event()`
+support the full state vocabulary, but reaching any status past
+`CANDIDATE` requires code that doesn't exist yet. (3) The registry is
+not wired into the live decision engine/`run_slate()` at all --
+`models/baseline.py`'s permanent, unmodified baseline is still the only
+model either one ever calls, exactly as before this phase; ADR 0003's
+`StrikeoutModel` interface already makes a future swap mechanical, but
+building that swap (plus the "exactly one ACTIVE model, permanent
+baseline as guaranteed fallback" logic the directive describes) is real
+future work this session's truncated directive text never actually
+specified the shape of.
