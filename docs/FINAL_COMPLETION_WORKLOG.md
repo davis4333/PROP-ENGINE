@@ -899,3 +899,40 @@ building that swap (plus the "exactly one ACTIVE model, permanent
 baseline as guaranteed fallback" logic the directive describes) is real
 future work this session's truncated directive text never actually
 specified the shape of.
+
+## Post-Phase-3 -- real Replit deployment verification (Tyler, 2026-08-07)
+
+This session has no Replit deployment access at all (repeated constraint
+throughout this document). Tyler redeployed `cassandrahits.replit.app`
+himself at commit `144fd1e148678fafe0d8042b065247b3e7bc06c9` (HEAD of
+`claude/repo-reset-jexzz6` after Phase 3) and reported the results back
+into this session verbatim. Recorded here as real evidence, distinct
+from anything this session could itself verify:
+
+- Took a real pre-deploy backup (`cassandra-backup-20260807T054741.dump`,
+  4.8 MB) before pulling -- the exact discipline 2D's new README section
+  asks for.
+- `alembic upgrade head` applied `d71edca7eb30 -> e076e6061a06` (Phase
+  3's model-artifacts/registry migration) against the real production
+  database; `alembic check` reported no drift.
+- Set `GIT_COMMIT_SHA` as a real Secret for the first time (2B's new
+  requirement) and confirmed `http://127.0.0.1:8000/health` (loopback,
+  from inside the Repl) returns it exactly.
+- `curl -sI https://cassandrahits.replit.app/` returns real HTML
+  (`content-type: text/html`, `x-powered-by: Next.js`), not the engine's
+  JSON 404 -- **this closes out the one previously-"not yet confirmed"
+  item from the prior deployment session** (the port-routing bug
+  documented above under "Verified against real infrastructure"; see
+  that entry, now updated).
+- `/api/today` returns valid JSON (`projection_count: 0` -- correct and
+  expected, since no `run_slate()` had fired yet for that slate date).
+- Deployment logs show the exact intended startup order: migrations ->
+  engine ready -> frontend ready.
+
+**Still not verified even after this**: 2A's actual failure-teardown
+behavior. This redeploy only exercised the successful startup path --
+nobody deliberately broke the engine (e.g. an unreachable
+`DATABASE_URL`) to confirm the whole deployment visibly goes down rather
+than the frontend surviving alone. `CURRENT_STATE_AUDIT.md`'s own 2A
+entry is updated to reflect this exact partial state, not overclaimed as
+fully verified.

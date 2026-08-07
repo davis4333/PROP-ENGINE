@@ -717,10 +717,24 @@ to invent missing product decisions:
   only needs to be reachable from the frontend on the same machine, and
   removing it from `0.0.0.0` takes it out of the running of any
   port-auto-detection Replit's deployment networking does across all
-  listening interfaces. If redeploying with this change doesn't fix it,
-  the deployment's public port needs to be explicitly reset to `3000` in
-  Replit's own deployment UI instead. Reverify with a fresh `curl -I`
-  against the root URL before calling this fully working end to end.
+  listening interfaces. **Confirmed fixed**: redeployed at commit
+  `144fd1e148678fafe0d8042b065247b3e7bc06c9` (2026-08-07, Phase 1-3
+  changes) and reverified — `curl -sI https://cassandrahits.replit.app/`
+  now returns `HTTP/2 200` / `content-type: text/html; charset=utf-8` /
+  `x-powered-by: Next.js` (real frontend HTML, not the engine's JSON
+  404), and `/api/today` returns valid JSON. Also confirmed on this same
+  redeploy: `alembic upgrade head` applied `e076e6061a06` (Phase 3's
+  model artifacts/registry migration) cleanly with `alembic check`
+  reporting no drift; `GIT_COMMIT_SHA` was set and `curl
+  http://127.0.0.1:8000/health` (loopback) returned it exactly
+  (`"git_commit_sha": "144fd1e148678fafe0d8042b065247b3e7bc06c9"` --
+  Phase 2B); and the startup log order was migrations → engine ready →
+  frontend ready, as designed. **Not yet confirmed**: Phase 2A's actual
+  failure-teardown behavior (the whole deployment going down if the
+  engine crashes) -- this redeploy only exercised the normal, successful
+  startup path, not a deliberately broken one (e.g. an unreachable
+  DATABASE_URL). That specific scenario still needs a deliberate test
+  against a non-production Repl before being called verified.
 
 ## Not verified against real infrastructure this session
 
@@ -740,15 +754,22 @@ to invent missing product decisions:
   exercised standalone (two isolated sandbox scripts simulating "engine
   dies first" and "frontend dies first", both correctly identified which
   process died, killed the other via the trap, and propagated the
-  correct exit code) and `bash -n` syntax-checked, but this session has
-  no Replit deployment access at all (see this document's own repeated
-  "no deploy access" notes) -- the real end-to-end behavior on an actual
-  Replit deployment (whether `wait -n`'s no-PID-argument form behaves
-  identically on Replit's actual bash version, whether Replit's
-  deployment platform actually treats a non-zero script exit as
-  "unhealthy"/restart-eligible the way this fix assumes) is **not yet
-  confirmed** and needs a real redeploy + an intentionally broken
-  migration (or similar) to verify.
+  correct exit code) and `bash -n` syntax-checked. **Partially confirmed
+  on real infrastructure since**: the 2026-08-07 redeploy at
+  `144fd1e148678fafe0d8042b065247b3e7bc06c9` (done by Tyler via Replit,
+  reported back into this session) shows the intended HAPPY-path startup
+  log order verbatim (`==> Applying database migrations` -> `==> Starting
+  the engine API...` / `Application startup complete` -> `==> Dev server
+  ...` / `Ready`) on a real Replit process, and the frontend is
+  reachable on the public port with the engine correctly loopback-only.
+  **Still not confirmed**: the actual FAILURE-teardown behavior --
+  whether `wait -n`'s no-PID-argument form behaves as expected on
+  Replit's real bash, and whether Replit's deployment platform actually
+  treats a non-zero script exit as "unhealthy"/restart-eligible the way
+  this fix assumes -- since this redeploy only exercised the successful
+  startup path, never a deliberately broken one (e.g. an unreachable
+  `DATABASE_URL`). That specific scenario still needs a deliberate test,
+  ideally against a non-production Repl first.
 
 ## Not automatable from this session (need a human with repo admin)
 
