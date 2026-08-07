@@ -108,6 +108,7 @@ class AdminStatusResponse(BaseModel):
     decision_policy_version: str
     feature_set_version: str
     decision_edge_threshold: float
+    git_commit_sha: str | None
     blocking_issues: list[str]
 
 

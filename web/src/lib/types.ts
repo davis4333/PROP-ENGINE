@@ -91,6 +91,7 @@ export interface AdminStatusResponse {
   decision_policy_version: string;
   feature_set_version: string;
   decision_edge_threshold: number;
+  git_commit_sha: string | null;
   blocking_issues: string[];
 }
 

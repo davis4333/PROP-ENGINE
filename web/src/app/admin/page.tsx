@@ -175,6 +175,7 @@ export default function AdminPage() {
               <span>decision policy: {status.decision_policy_version}</span>
               <span>feature set: {status.feature_set_version}</span>
               <span>edge threshold: {status.decision_edge_threshold}</span>
+              <span>deployed commit: {status.git_commit_sha ?? "unknown"}</span>
             </div>
           </section>
 

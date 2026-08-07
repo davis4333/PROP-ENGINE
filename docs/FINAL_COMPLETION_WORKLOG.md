@@ -494,3 +494,73 @@ ruff/mypy/guardrails clean.
 Remaining limitation: none identified -- this was a narrowly-scoped
 counter-semantics fix with no schema change and no behavior change for
 the genuine-failure path.
+
+**All six Phase 1 items (1A-1F) are now complete.** Phase 2 (Replit
+runtime reliability, repo-prep only -- no deploy access, see the top of
+this document) begins below.
+
+## Phase 2 -- Replit runtime reliability
+
+### 2B -- deployed git commit SHA visibility (fixed)
+
+Confirmed real: `GET /health` returned a bare `{"status": "ok"}` with no
+build/version identity at all, and `AdminStatusResponse` (the Admin
+page's data source) exposed `model_version`/`decision_policy_version`/
+`feature_set_version` but no git commit SHA -- an operator had no way to
+confirm which actual commit was running on a given deployment, even
+though `config.py`'s `get_git_commit_sha()` (prefers an explicit
+`GIT_COMMIT_SHA` env var set at deploy time, falls back to `git
+rev-parse HEAD` for local/dev, returns `None` rather than raising) has
+existed since Phase 8/ADR 0010 and was already wired into every
+`Projection` row's own `git_commit_sha` field -- just never surfaced at
+the deployment level.
+
+Fix: `GET /health` now returns `{"status": "ok", "git_commit_sha": ...}`.
+`AdminStatusResponse` gained a `git_commit_sha: str | None` field
+(`api/schemas.py`, `api/routers/admin.py`), surfaced on the Admin page
+next to the existing model/policy/feature-set version line
+(`web/src/app/admin/page.tsx`, `web/src/lib/types.ts`). Per the
+directive's explicit requirement ("missing SHA must be a visible
+warning, not silent"), a `None` SHA is appended to
+`AdminStatusResponse.blocking_issues` with a message naming the fix
+(`GIT_COMMIT_SHA` env var) -- there is no separate "warnings" channel in
+this schema today, so `blocking_issues` is the only existing
+operator-visible surface; reusing it was a deliberate choice over adding
+a new response field for a single warning message.
+
+Did NOT attempt to make `/health` distinguish
+engine-initializing/engine-ready/engine-failed (part of 2A, tracked
+separately below) -- documented directly in `main.py`'s `health()`
+docstring why that specific distinction isn't observable from inside
+this handler at all (it only ever runs once the process is already
+listening, which is always after migrations/lifespan-gate have already
+resolved one way or the other), and why building that visibility would
+require a change on the Next.js side (the only publicly exposed port on
+Replit), which ADR 0012 requires the owner to sign off on before adding
+any new frontend surface -- not silently invented here.
+
+Tests: 3 new (`test_health.py`: default `status: ok`, a monkeypatched
+real SHA round-trips through `/health`, a monkeypatched `None` SHA
+returns `200` with `git_commit_sha: null` rather than erroring) + 2 new
+in `test_admin_router.py` (`test_admin_status_with_correct_secret_...`
+extended to assert the SHA round-trips and isn't itself a blocking
+issue; new `test_admin_status_warns_when_git_commit_sha_is_unavailable`
+asserting the `None` case produces both `git_commit_sha: null` and a
+matching `blocking_issues` entry).
+
+Verified: 333 tests passing (329 + 4 backend -- one test file gained 2
+tests, one gained 1, plus the new file's 3, net +4 after accounting for
+the extended existing test) against a fresh scratch database,
+ruff/mypy/guardrails clean; frontend `tsc --noEmit`, `eslint`, and
+`vitest run` (26 tests) all clean.
+
+(Mid-verification note, unrelated to this change: the shared dev
+Postgres cluster had stopped between sessions -- `service postgresql
+start` before re-running the suite; not a regression from this commit.)
+
+Remaining limitation: `git_commit_sha` is only as trustworthy as whoever
+sets `GIT_COMMIT_SHA` at Replit deploy time -- this repo cannot verify
+Tyler actually sets it correctly on a real deployment (no deploy
+access); README/DEVELOPMENT docs should say to set it from the actual
+deployed commit, covered under 2D's documentation pass below if not
+already present.

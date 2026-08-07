@@ -33,7 +33,7 @@ from cassandra.api.schemas import (
     SourceHealthOut,
     UnmatchedLineImportEntryOut,
 )
-from cassandra.config import settings
+from cassandra.config import get_git_commit_sha, settings
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
 from cassandra.db.models.sources import SourceHealth
 from cassandra.decision.engine import DECISION_POLICY_VERSION
@@ -116,6 +116,20 @@ def get_admin_status(db: Session = Depends(get_db)) -> AdminStatusResponse:
         if s.consecutive_failures >= CONSECUTIVE_FAILURE_ALERT_THRESHOLD:
             blocking_issues.append(f"Source {s.source_id} has failed {s.consecutive_failures} times in a row")
 
+    git_commit_sha = get_git_commit_sha()
+    if git_commit_sha is None:
+        # Phase 2B: a missing deployed commit SHA must be a visible
+        # warning, not a silent gap -- otherwise an operator has no way
+        # to confirm which code a given projection/run actually came
+        # from. Surfaced via blocking_issues since that's the only
+        # existing "make this visible to the operator" channel; see
+        # config.py's get_git_commit_sha() for how GIT_COMMIT_SHA/`git
+        # rev-parse HEAD` are resolved.
+        blocking_issues.append(
+            "No git commit SHA available -- set the GIT_COMMIT_SHA environment "
+            "variable at deploy time (no .git directory to introspect on Replit)"
+        )
+
     return AdminStatusResponse(
         sources=source_outs,
         recent_runs=run_outs,
@@ -123,6 +137,7 @@ def get_admin_status(db: Session = Depends(get_db)) -> AdminStatusResponse:
         decision_policy_version=DECISION_POLICY_VERSION,
         feature_set_version=FEATURE_SET_VERSION,
         decision_edge_threshold=settings.decision_edge_threshold,
+        git_commit_sha=git_commit_sha,
         blocking_issues=blocking_issues,
     )
 

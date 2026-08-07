@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from cassandra.api.routers import admin, ledger, today
-from cassandra.config import admin_secret_is_weak, is_production_environment, settings
+from cassandra.config import admin_secret_is_weak, get_git_commit_sha, is_production_environment, settings
 from cassandra.orchestration.scheduler import start_background_scheduler
 
 
@@ -88,5 +88,26 @@ app.include_router(admin.router)
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, str | None]:
+    # Phase 2B: exposes the deployed commit SHA so an operator (or the
+    # Admin page) can confirm which code actually produced a given
+    # response -- a None here is a visible gap (see get_git_commit_sha's
+    # own docstring), not a silent one; api/routers/admin.py surfaces the
+    # same None as a blocking_issues entry.
+    #
+    # Deliberately does NOT attempt an "engine-initializing"/"engine-
+    # failed" distinction (Phase 2A) -- this handler only runs once the
+    # FastAPI process is already listening, which on
+    # scripts/replit_start.sh's timeline is only ever after migrations
+    # have already completed and the lifespan startup gate has already
+    # passed. A caller can never observe this process mid-initialization
+    # over HTTP; that state is only observable from outside the process
+    # (Replit's own deployment logs, or scripts/replit_start.sh's own
+    # supervision of the engine subprocess -- see that script for the
+    # "engine died, take the whole deployment down" behavior). A true
+    # externally-visible engine-initializing state would require a
+    # change on the Next.js side (the only publicly exposed port), which
+    # is out of scope here per ADR 0012 (no new frontend surface without
+    # the owner's sign-off) -- documented as a known limitation, not
+    # silently worked around.
+    return {"status": "ok", "git_commit_sha": get_git_commit_sha()}

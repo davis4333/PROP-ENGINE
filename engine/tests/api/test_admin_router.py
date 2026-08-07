@@ -16,6 +16,7 @@ from datetime import UTC, datetime, time
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cassandra.api import deps
+from cassandra.api.routers import admin as admin_router
 from cassandra.config import settings
 from cassandra.db.models.identity import Game, Player
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
@@ -46,7 +47,8 @@ def test_failed_admin_auth_is_logged_without_the_attempted_secret(client, caplog
     assert not any("a-guessed-secret-value" in m for m in messages)
 
 
-def test_admin_status_with_correct_secret_returns_versions_and_empty_state(client):
+def test_admin_status_with_correct_secret_returns_versions_and_empty_state(client, monkeypatch):
+    monkeypatch.setattr(admin_router, "get_git_commit_sha", lambda: "deadbeef1234")
     response = client.get("/api/admin/status", headers=AUTH)
 
     assert response.status_code == 200
@@ -55,7 +57,21 @@ def test_admin_status_with_correct_secret_returns_versions_and_empty_state(clien
     assert body["decision_policy_version"] == "k-decision-0.1.0"
     assert body["sources"] == []
     assert body["recent_runs"] == []
+    assert body["git_commit_sha"] == "deadbeef1234"
     assert body["blocking_issues"] == []
+
+
+def test_admin_status_warns_when_git_commit_sha_is_unavailable(client, monkeypatch):
+    # Phase 2B: a missing deployed commit SHA (e.g. GIT_COMMIT_SHA unset
+    # and no .git directory to introspect, the expected Replit case) must
+    # be a visible warning, never a silent gap.
+    monkeypatch.setattr(admin_router, "get_git_commit_sha", lambda: None)
+    response = client.get("/api/admin/status", headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["git_commit_sha"] is None
+    assert any("git commit sha" in issue.lower() for issue in body["blocking_issues"])
 
 
 def test_admin_status_surfaces_source_health_and_failed_run_as_blocking(client, db_session):
