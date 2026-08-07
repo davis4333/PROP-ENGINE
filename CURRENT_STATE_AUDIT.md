@@ -759,6 +759,42 @@ to invent missing product decisions:
   startup path, not a deliberately broken one (e.g. an unreachable
   DATABASE_URL). That specific scenario still needs a deliberate test
   against a non-production Repl before being called verified.
+- **Confirmed on a second real redeploy**: commit
+  `3f14eef3b9f27a49841e1c3c1fbb3c8f73269abf` (2026-08-07, Phase 4 --
+  closing the self-learning loop) was deployed and verified by Tyler.
+  `alembic upgrade head` applied `f18a2c4e9b31` (the `sequence` column on
+  `model_registry_events`) cleanly with `alembic check` reporting no
+  drift; `curl http://127.0.0.1:8000/health` (loopback) returned
+  `{"status":"ok","git_commit_sha":"3f14eef3b9f27a49841e1c3c1fbb3c8f73269abf"}`;
+  `curl -sI https://cassandrahits.replit.app/` returned `HTTP/2 200` /
+  real frontend HTML; and `cassandra model-status` correctly reported
+  `ACTIVE: permanent baseline (model_version=k-model-0.1.0)` with no
+  registry events yet -- i.e. `resolve_active_model()`'s baseline
+  fallback path is confirmed live and correct in production, since no
+  challenger has been promoted yet. One real incident surfaced during
+  this deploy and was fixed in this session immediately after: Replit's
+  workspace file sync auto-committed the ~5MB pre-deploy backup dump
+  (`cassandra-backup-<timestamp>.dump`, produced by the README's
+  documented `pg_dump --format=custom` step) into git, diverging the
+  local Replit clone from `origin/claude/repo-reset-jexzz6` and blocking
+  a fast-forward pull. Tyler's Replit agent resolved the immediate
+  problem with `git reset --hard origin/claude/repo-reset-jexzz6`
+  (confirmed via `git fetch` from this session that the real GitHub
+  remote was never polluted -- only the local Replit workspace
+  diverged). Root cause: `.gitignore`'s pre-existing `backup_*.sql`
+  pattern (added in Phase 2D) never matched the `.dump` extension or
+  `cassandra-backup-` prefix the README instructs Tyler to actually
+  produce -- a real gap introduced in an earlier phase of this build and
+  not caught until it caused a live incident. Fixed by broadening
+  `.gitignore` to a bare `*.dump` pattern, since any `.dump` file in this
+  repo is a Postgres custom-format backup, never source code, regardless
+  of its exact name. **Remaining risk this doesn't fully close**: this
+  only prevents git from tracking a dump file that lands inside the
+  repo's working directory -- it doesn't stop Tyler from running `pg_dump`
+  with an output path inside the repo in the first place. The README's
+  backup instructions should ideally write outside the repo tree
+  entirely; that's a documentation follow-up, not a code change, and is
+  not yet done.
 
 ## Not verified against real infrastructure this session
 

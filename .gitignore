@@ -36,8 +36,18 @@ engine/data/lines_drops/*
 # scripts/pretool_guardrails_check.py) -- always cleaned up after use.
 .guardrail_precheck/
 
-# Local backups and uploaded assets (Replit-only, not for version control)
+# Local backups and uploaded assets (Replit-only, not for version control).
+# *.dump specifically: README.md's "Before redeploying" section has Tyler
+# run `pg_dump --format=custom --file="cassandra-backup-<timestamp>.dump"`
+# before every deploy -- that filename never matched backup_*.sql's
+# pattern (wrong prefix, wrong extension), which is exactly what let a
+# real pre-deploy backup dump get auto-committed by Replit's workspace
+# sync and diverge the branch (see docs/FINAL_COMPLETION_WORKLOG.md).
+# Broadened to *.dump rather than matching the exact "cassandra-backup-"
+# prefix, since any .dump file is a Postgres custom-format backup, never
+# source code, regardless of exactly how it's named.
 backup_*.sql
+*.dump
 attached_assets/
 
 # Frozen training-dataset artifacts (historical/dataset_builder.py) --

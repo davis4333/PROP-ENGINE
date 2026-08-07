@@ -1204,3 +1204,50 @@ now -- deliberately, since ADR 0012 requires checking with the owner
 before adding new interactive surface to Admin, and a promote/rollback
 button is a more consequential UI addition than a read-only status
 display).
+
+## Post-Phase-4 -- real Replit deployment verification (Tyler, 2026-08-07)
+
+Tyler redeployed `cassandrahits.replit.app` at `3f14eef` (this session's
+Phase 4 HEAD) and reported results back:
+
+- `alembic upgrade head` applied `e076e6061a06 -> f18a2c4e9b31` (the
+  sequence-column fix from 4.2) cleanly against production; `alembic
+  check` reported no drift.
+- `curl http://127.0.0.1:8000/health` (loopback) returned
+  `git_commit_sha: "3f14eef..."`, matching the deployed commit.
+- `curl -sI https://cassandrahits.replit.app/` still returns real
+  frontend HTML.
+- `cassandra model-status` against production correctly reported
+  "ACTIVE: permanent baseline ... No registry events yet." -- the
+  expected, correct state, since nothing has been trained/promoted in
+  production yet.
+
+**A real bug this deploy surfaced, found and fixed in this session
+immediately after**: Tyler's agent reported that the pre-deploy backup
+step (`README.md`'s own documented `pg_dump --file="cassandra-backup-
+<timestamp>.dump"` command, from Phase 2D) got auto-committed by
+Replit's workspace file sync, diverging the branch and blocking a
+fast-forward pull -- resolved on their end with `git reset --hard
+origin/...` (confirmed via `git fetch` from this session: the remote
+branch itself was never polluted, only Replit's local workspace was).
+Root cause, confirmed by inspecting `.gitignore` directly: it already
+had a `backup_*.sql` pattern, but Phase 2D's own README instruction
+tells Tyler to create a file named `cassandra-backup-<timestamp>.dump`
+-- wrong prefix (`cassandra-backup-` vs `backup_`) *and* wrong extension
+(`.dump` vs `.sql`), so the one pattern meant to prevent exactly this
+never matched the one command this repo actually tells Tyler to run.
+This was a real gap this session introduced in Phase 2D and never
+caught -- documented here plainly rather than glossed over. Fixed by
+broadening `.gitignore` to `*.dump` (any Postgres custom-format dump is
+never source code, regardless of exact naming) in addition to the
+existing `backup_*.sql`.
+
+Remaining risk this doesn't fully close: a *database backup containing
+real production data* touching a git working directory at all (even
+transiently, even if gitignored before the next `git add`) is worth
+Tyler being aware of as a habit -- write backups outside the repo
+directory entirely if practical, not just rely on `.gitignore` catching
+it after the fact. Not changed here since it's a workflow habit, not
+something a `.gitignore` line alone fully guarantees (a `git add -A` run
+before the ignore rule is in effect, or from a different pull, could
+still stage it) -- flagged, not silently assumed solved.
