@@ -33,5 +33,13 @@
 .rejected {
   background: rgba(161, 161, 170, 0.1);
   border-color: rgba(161, 161, 170, 0.25);
-  color: #a1a1aa;
+  /* Brightened from #a1a1aa: the .status caption's opacity: 0.75 (which
+     "REJECTED"/"NO_PLAY" render through) drops #a1a1aa to an effective
+     4.45:1 against the page background -- just under WCAG AA's 4.5:1 floor
+     for normal-size text (confirmed via axe-core against real rendered
+     data). This is the one badge responsible for ADR 0002's "can't mistake
+     a NO_PLAY/REJECTED row for a real pick" requirement, so its status
+     text needs to stay legible. #b4b4bd clears the same opacity multiply
+     at ~5.4:1. */
+  color: #b4b4bd;
 }
