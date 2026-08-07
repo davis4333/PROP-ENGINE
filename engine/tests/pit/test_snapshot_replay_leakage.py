@@ -22,9 +22,14 @@ from cassandra.db.models.sources import Source
 from cassandra.features.builders import build_features
 from cassandra.pit.snapshot_builder import build_snapshot
 
+# 900000000+ range, matching test_historical_backfill.py/test_dataset_builder.py's
+# convention -- 110/111 were real MLB team IDs (Baltimore Orioles/Boston Red
+# Sox), which collided with real seeded demo-slate data in a shared dev DB
+# and broke every test in this file with a UniqueViolation on
+# teams.mlb_team_id (found via this session's test-coverage audit).
 GAME_PK = 999101
-HOME_TEAM_MLB_ID = 110
-AWAY_TEAM_MLB_ID = 111
+HOME_TEAM_MLB_ID = 900000110
+AWAY_TEAM_MLB_ID = 900000111
 SLATE_DATE = datetime(2024, 4, 1).date()
 CUTOFF = datetime(2024, 4, 1, 22, 0, tzinfo=UTC)  # first pitch was 18:00 UTC
 BEFORE = CUTOFF - timedelta(hours=2)

@@ -116,9 +116,18 @@ def test_umpire_stub_never_appears_as_a_blocking_issue(client, db_session):
     # produces via ingest_service.py's _source_health_status() -- see
     # NEVER_BLOCKING_STATES in api/routers/admin.py, which is keyed on
     # this state, not the source's name.
+    # umpire_stub is also the real, permanent canonical source name a live
+    # ingestion run creates -- on_conflict_do_nothing (matching line 181's
+    # pattern below) avoids a UniqueViolation if this test runs against a
+    # dev DB that's already been seeded/run for real (found via this
+    # session's test-coverage audit).
     stmt = pg_insert(Source).values(source_id="umpire_stub", name="umpire_stub", kind="umpire")
-    db_session.execute(stmt)
-    db_session.add(
+    db_session.execute(stmt.on_conflict_do_nothing(index_elements=[Source.source_id]))
+    # source_health is keyed on source_id too and is a real, permanent row
+    # once any live ingestion has run -- merge() (upsert by primary key)
+    # instead of add() for the same reason as the on_conflict_do_nothing
+    # above.
+    db_session.merge(
         SourceHealth(
             source_id="umpire_stub",
             last_status="DISABLED",
