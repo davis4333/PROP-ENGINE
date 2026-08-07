@@ -632,3 +632,69 @@ lower-stakes failure mode for an interactive session (killing the whole
 dev server the moment the engine crashes once, mid-iteration, would be
 more disruptive than helpful for local development). Not applying the
 same supervision there was a deliberate scope choice, not an oversight.
+
+### 2C -- scheduler reliability: configurable cadence + duplicate-process advisory lock (fixed)
+
+Confirmed real by re-reading `orchestration/scheduler.py` against the
+directive's specific asks: `POLL_INTERVAL_SECONDS`/`GRADE_LOOKBACK_DAYS`
+were hardcoded module constants (unlike `auto_run_hours_local`/
+`operating_timezone`, already `settings`-backed) -- retuning cadence
+needed a code change, not a config change. There was also no defense at
+all against two scheduler *processes* running against the same database
+concurrently -- `run_slate()`/`grade_slate_run()` being independently
+idempotent makes this data-safe today, but a second process would still
+silently double-spend metered vendor API quota (Odds API, MLB Stats API)
+for zero benefit. Confirmed overlapping ticks within a single process
+were already structurally impossible -- `_scheduler_loop` is one thread
+that blocks on `run_scheduled_tasks()` before its next `wait()`, so no
+separate per-task lock was needed for that specific directive item; this
+finding is documented in the module's own top docstring rather than
+adding redundant locking machinery for a race that can't occur.
+
+Fix, two parts:
+1. `config.py` gained `scheduler_poll_interval_seconds` (default `900`,
+   matching the old constant) and `scheduler_grade_lookback_days`
+   (default `3`, same) as real `Settings` fields, same style as the
+   existing `auto_run_hours_local`. `scheduler.py` now reads both from
+   `settings` instead of module constants.
+2. New `_run_scheduled_tasks_locked()` wraps `run_scheduled_tasks()` in a
+   non-blocking Postgres session-level advisory lock
+   (`pg_try_advisory_lock`/`pg_advisory_unlock` on a fixed arbitrary key)
+   acquired via a raw `engine.connect()` (not `session_scope()`, since
+   the lock must span `run_scheduled_tasks()`'s own several independent
+   transactions, then be explicitly released rather than
+   auto-releasing with any one of them). If another process already
+   holds the lock, this instance logs a WARNING and skips the entire
+   tick rather than blocking. `_scheduler_loop` now calls this wrapper
+   instead of `run_scheduled_tasks()` directly.
+
+Tests: 2 new unit tests in `test_scheduler.py`
+(`test_run_scheduled_tasks_respects_configured_grade_lookback_days`,
+`test_scheduler_loop_uses_the_locked_wrapper_and_configured_poll_interval`
+-- the latter via a small `_RecordingStopEvent` test double, confirming
+`_scheduler_loop` calls the new locked wrapper, not the old direct call,
+and passes through the configured poll interval) + 4 new integration
+tests in a new `test_scheduler_advisory_lock.py` against a real Postgres
+connection (advisory locks are a genuine server-side primitive a mock
+session can't exercise): runs normally when the lock is free; skips
+(never calling `run_scheduled_tasks`) when a second real connection
+already holds the lock; releases the lock so a later call can reacquire
+it; releases the lock even when the wrapped call raises (proven by a
+fresh probe connection successfully re-acquiring the lock afterward, not
+by inspecting internal state). Confirmed via `git stash` that all 6 new
+tests fail against the pre-fix code (`AttributeError` on the not-yet-
+existing function/settings fields, since this is new capability rather
+than a behavior-preserving bug fix -- the meaningful proof here is that
+the failure is exactly "this code doesn't exist yet," not a vacuous
+assertion).
+
+Verified: 339 tests passing (333 + 6) against a fresh scratch database,
+ruff/mypy/guardrails clean.
+
+Remaining limitation: same as the rest of Phase 2 -- the advisory lock's
+actual behavior under two real concurrent Replit processes has not been
+(and cannot be, from this session) verified against live infrastructure;
+only the SQL primitive itself and the wrapper's control flow were
+exercised, both against a real local Postgres. This is defense-in-depth
+for a scenario the current single-instance deployment shouldn't create
+in the first place, not a fix for an observed production incident.

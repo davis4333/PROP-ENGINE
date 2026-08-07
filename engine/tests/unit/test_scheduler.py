@@ -166,6 +166,56 @@ def test_run_scheduled_tasks_one_failing_grade_date_does_not_block_the_others(mo
     assert date(2026, 8, 3) in grade_calls
 
 
+def test_run_scheduled_tasks_respects_configured_grade_lookback_days(monkeypatch):
+    # Phase 2C: the lookback window is now settings.scheduler_grade_lookback_days
+    # rather than a hardcoded module constant -- confirm changing it away
+    # from the default (3) actually changes how many days get graded.
+    monkeypatch.setattr(scheduler.settings, "auto_run_hours_local", "0")
+    monkeypatch.setattr(scheduler.settings, "scheduler_grade_lookback_days", 1)
+    grade_calls: list[date] = []
+    monkeypatch.setattr(scheduler, "run_slate", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "grade_slate_run", lambda *a, **k: grade_calls.append(a[1]))
+    monkeypatch.setattr(scheduler, "session_scope", _fake_session_scope)
+    monkeypatch.setattr(scheduler, "_run_slate_success_count_today", lambda session, today: 0)
+
+    now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
+    scheduler.run_scheduled_tasks(now)
+
+    assert grade_calls == [date(2026, 8, 5), date(2026, 8, 4)]
+
+
+class _RecordingStopEvent:
+    """A minimal threading.Event stand-in that records every wait()
+    timeout and stops the loop after exactly one iteration."""
+
+    def __init__(self) -> None:
+        self.wait_calls: list[float] = []
+        self._set = False
+
+    def is_set(self) -> bool:
+        return self._set
+
+    def wait(self, timeout: float) -> None:
+        self.wait_calls.append(timeout)
+        self._set = True
+
+
+def test_scheduler_loop_uses_the_locked_wrapper_and_configured_poll_interval(monkeypatch):
+    # Phase 2C: _scheduler_loop must go through the advisory-lock wrapper
+    # (not call run_scheduled_tasks directly) and must sleep for
+    # settings.scheduler_poll_interval_seconds, not the old hardcoded
+    # module constant.
+    monkeypatch.setattr(scheduler.settings, "scheduler_poll_interval_seconds", 42)
+    calls: list[datetime] = []
+    monkeypatch.setattr(scheduler, "_run_scheduled_tasks_locked", calls.append)
+    stop_event = _RecordingStopEvent()
+
+    scheduler._scheduler_loop(stop_event)
+
+    assert len(calls) == 1
+    assert stop_event.wait_calls == [42]
+
+
 def test_start_background_scheduler_is_a_noop_when_disabled(monkeypatch):
     monkeypatch.setattr(scheduler.settings, "auto_scheduler_enabled", False)
     stop_event = scheduler.start_background_scheduler()

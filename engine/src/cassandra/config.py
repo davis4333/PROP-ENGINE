@@ -101,6 +101,13 @@ class Settings(BaseSettings):
     # different cadences. Parsed by orchestration/scheduler.py's
     # parse_run_hours(), which never raises on a malformed entry.
     auto_run_hours_local: str = "7,12,16"
+    # orchestration/scheduler.py's background-thread poll interval and
+    # how many trailing days grade_slate_run() is re-attempted for on
+    # every tick. Previously hardcoded module constants -- pulled into
+    # settings (Phase 2C) so a deployment can tune cadence without a code
+    # change, matching auto_run_hours_local's existing configurability.
+    scheduler_poll_interval_seconds: int = 15 * 60
+    scheduler_grade_lookback_days: int = 3
 
     # adapters/lines_odds_api.py -- a real, licensed odds vendor (The Odds
     # API), used in place of adapters/lines_manual.py's manual drop-folder

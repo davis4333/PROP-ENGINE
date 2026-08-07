@@ -35,6 +35,18 @@ are actually on record for today (see _run_slate_success_count_today) --
 a process restart just re-derives this count from the database, so a
 redeploy can never trigger a redundant run (re-burning real, metered
 Odds API credits) just because in-memory state was reset to zero.
+
+Configurable via settings (Phase 2C): operating_tz()/auto_run_hours_local
+(timezone/run-hours), scheduler_grade_lookback_days (the trailing-day
+grading window), and scheduler_poll_interval_seconds (how often the
+background thread wakes up) -- no code change needed to retune cadence.
+Overlapping ticks within a single process can't happen structurally
+(_scheduler_loop is one thread that blocks on run_scheduled_tasks()
+before its next wait(), never starts a second tick concurrently); a
+Postgres session-level advisory lock (_run_scheduled_tasks_locked) guards
+the separate case of more than one scheduler PROCESS somehow running
+against the same database at once, even though the current deployment
+is meant to be single-instance.
 """
 
 from __future__ import annotations
@@ -44,18 +56,22 @@ import threading
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from cassandra.config import operating_tz, settings
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
-from cassandra.db.session import session_scope
+from cassandra.db.session import engine, session_scope
 from cassandra.orchestration.run_slate import grade_slate_run, run_slate
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL_SECONDS = 15 * 60
-GRADE_LOOKBACK_DAYS = 3
+# Phase 2C: an arbitrary but fixed key identifying "the Cassandra
+# scheduler's single global tick" in Postgres's session-level advisory
+# lock namespace (shared database-wide -- there is no other advisory
+# lock use in this codebase to collide with). See
+# _run_scheduled_tasks_locked()'s docstring for why this exists at all.
+_SCHEDULER_ADVISORY_LOCK_KEY = 727_364_501
 
 
 def _local_now() -> datetime:
@@ -150,7 +166,7 @@ def run_scheduled_tasks(now_local: datetime) -> None:
             except Exception:
                 logger.exception("scheduler: run_slate failed for %s", today)
 
-        for offset in range(GRADE_LOOKBACK_DAYS + 1):
+        for offset in range(settings.scheduler_grade_lookback_days + 1):
             target = today - timedelta(days=offset)
             try:
                 with session_scope() as session:
@@ -159,10 +175,49 @@ def run_scheduled_tasks(now_local: datetime) -> None:
                 logger.exception("scheduler: grade_slate_run failed for %s", target)
 
 
+def _run_scheduled_tasks_locked(now_local: datetime) -> None:
+    """Wraps run_scheduled_tasks() in a non-blocking Postgres session-level
+    advisory lock so that if more than one scheduler process somehow ends
+    up running against the same database at once (an overlapping
+    redeploy, a misconfiguration that starts two instances -- the current
+    single-instance Replit deployment shouldn't do this, but nothing
+    prevents it structurally) at most one of them actually does a given
+    tick's work. run_slate()/grade_slate_run() being independently
+    idempotent (see this module's own top docstring) means a concurrent
+    duplicate call would still be data-safe, but it would also silently
+    double-spend metered vendor API quota (the Odds API, MLB Stats API)
+    for zero benefit -- this closes that gap defensively even though it
+    isn't a correctness requirement today.
+
+    Uses a plain DBAPI connection (not session_scope()) since the lock
+    needs to be held across run_scheduled_tasks()'s own several separate
+    session_scope() transactions, then explicitly released -- a session-
+    level lock (pg_try_advisory_lock/pg_advisory_unlock), not the auto-
+    releasing pg_advisory_xact_lock, which only lives as long as a single
+    transaction. Non-blocking (pg_try_advisory_lock, not
+    pg_advisory_lock): a tick that loses the race just skips and logs,
+    rather than piling up blocked threads."""
+    with engine.connect() as conn:
+        acquired = conn.execute(
+            text("SELECT pg_try_advisory_lock(:key)"), {"key": _SCHEDULER_ADVISORY_LOCK_KEY}
+        ).scalar_one()
+        if not acquired:
+            logger.warning(
+                "scheduler: another process already holds the scheduler advisory lock -- "
+                "skipping this tick (likely two scheduler processes running against the "
+                "same database at once)"
+            )
+            return
+        try:
+            run_scheduled_tasks(now_local)
+        finally:
+            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": _SCHEDULER_ADVISORY_LOCK_KEY})
+
+
 def _scheduler_loop(stop_event: threading.Event) -> None:
     while not stop_event.is_set():
-        run_scheduled_tasks(_local_now())
-        stop_event.wait(POLL_INTERVAL_SECONDS)
+        _run_scheduled_tasks_locked(_local_now())
+        stop_event.wait(settings.scheduler_poll_interval_seconds)
 
 
 def start_background_scheduler() -> threading.Event:
