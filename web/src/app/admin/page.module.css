@@ -101,6 +101,32 @@
   margin-bottom: 0.75rem;
 }
 
+.activeModel {
+  padding: 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  background: rgba(139, 92, 246, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8125rem;
+  color: #d4d4d8;
+}
+
+.activeModelTitle {
+  color: #c4b5fd;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.activeModelMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #a1a1aa;
+}
+
 .runHeader {
   display: flex;
   justify-content: space-between;

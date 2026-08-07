@@ -101,6 +101,23 @@ class PipelineRunOut(BaseModel):
     stages: list[PipelineStageOut]
 
 
+class ActiveModelOut(BaseModel):
+    """The registry artifact currently serving live predictions (Phase 4)
+    -- present only when a challenger has been promoted via `cassandra
+    promote-model`; the Admin page shows "permanent baseline" instead
+    when this is null, since AdminStatusResponse.model_version already
+    covers that case on its own."""
+
+    artifact_id: str
+    model_family: str
+    fitted_model_version: str
+    trained_at: datetime
+    training_dataset_id: str
+    training_metrics: dict
+    activated_at: datetime
+    activated_by: str
+
+
 class AdminStatusResponse(BaseModel):
     sources: list[SourceHealthOut]
     recent_runs: list[PipelineRunOut]
@@ -109,6 +126,11 @@ class AdminStatusResponse(BaseModel):
     feature_set_version: str
     decision_edge_threshold: float
     git_commit_sha: str | None
+    # Null whenever no artifact is ACTIVE -- model_version above already
+    # reads as the permanent baseline's version string in that case, this
+    # is the richer detail (training provenance/metrics/who-activated-it)
+    # only a real promoted artifact has.
+    active_model: ActiveModelOut | None
     blocking_issues: list[str]
 
 

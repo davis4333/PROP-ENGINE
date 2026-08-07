@@ -84,6 +84,17 @@ export interface PipelineRunOut {
   stages: PipelineStageOut[];
 }
 
+export interface ActiveModelOut {
+  artifact_id: string;
+  model_family: string;
+  fitted_model_version: string;
+  trained_at: string;
+  training_dataset_id: string;
+  training_metrics: Record<string, number>;
+  activated_at: string;
+  activated_by: string;
+}
+
 export interface AdminStatusResponse {
   sources: SourceHealthOut[];
   recent_runs: PipelineRunOut[];
@@ -92,6 +103,7 @@ export interface AdminStatusResponse {
   feature_set_version: string;
   decision_edge_threshold: number;
   git_commit_sha: string | null;
+  active_model: ActiveModelOut | null;
   blocking_issues: string[];
 }
 

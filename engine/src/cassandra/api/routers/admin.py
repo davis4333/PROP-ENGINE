@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from cassandra.api.deps import get_db, require_admin
 from cassandra.api.schemas import (
+    ActiveModelOut,
     AdminStatusResponse,
     GradeActionResponse,
     LineImportCommitResponse,
@@ -35,12 +36,13 @@ from cassandra.api.schemas import (
 )
 from cassandra.config import get_git_commit_sha, settings
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
+from cassandra.db.models.registry import ModelArtifact, ModelRegistryEvent
 from cassandra.db.models.sources import SourceHealth
 from cassandra.decision.engine import DECISION_POLICY_VERSION
 from cassandra.features.builders import FEATURE_SET_VERSION
 from cassandra.ingestion.manual_line_import import LineImportEntry, commit_line_import, preview_line_import
-from cassandra.models.baseline import MODEL_VERSION
 from cassandra.orchestration.run_slate import grade_slate_run, run_slate
+from cassandra.registry.service import resolve_active_model
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -116,6 +118,36 @@ def get_admin_status(db: Session = Depends(get_db)) -> AdminStatusResponse:
         if s.consecutive_failures >= CONSECUTIVE_FAILURE_ALERT_THRESHOLD:
             blocking_issues.append(f"Source {s.source_id} has failed {s.consecutive_failures} times in a row")
 
+    resolved_model = resolve_active_model(db)
+    active_model_out: ActiveModelOut | None = None
+    if resolved_model.active_artifact_id is not None:
+        artifact = db.get(ModelArtifact, resolved_model.active_artifact_id)
+        if artifact is None:
+            raise RuntimeError(
+                f"active_artifact_id={resolved_model.active_artifact_id} but no matching row exists -- "
+                "should be structurally impossible (model_artifacts is append-only)"
+            )
+        # active_artifact()'s own contract guarantees this artifact's
+        # latest event is the ACTIVE one -- reading it back here gives
+        # "when/by whom" without resolve_active_model() needing to widen
+        # its own return type just to carry this Admin-only detail.
+        latest_event = db.execute(
+            select(ModelRegistryEvent)
+            .where(ModelRegistryEvent.artifact_id == resolved_model.active_artifact_id)
+            .order_by(ModelRegistryEvent.sequence.desc())
+            .limit(1)
+        ).scalar_one()
+        active_model_out = ActiveModelOut(
+            artifact_id=artifact.artifact_id,
+            model_family=artifact.model_family,
+            fitted_model_version=artifact.fitted_model_version,
+            trained_at=artifact.trained_at,
+            training_dataset_id=artifact.training_dataset_id,
+            training_metrics=artifact.training_metrics,
+            activated_at=latest_event.occurred_at,
+            activated_by=latest_event.operator,
+        )
+
     git_commit_sha = get_git_commit_sha()
     if git_commit_sha is None:
         # Phase 2B: a missing deployed commit SHA must be a visible
@@ -133,11 +165,18 @@ def get_admin_status(db: Session = Depends(get_db)) -> AdminStatusResponse:
     return AdminStatusResponse(
         sources=source_outs,
         recent_runs=run_outs,
-        model_version=MODEL_VERSION,
+        # The REAL model_version run_slate() would use right now -- the
+        # active artifact's fitted_model_version if one is promoted,
+        # otherwise the permanent baseline's, via the exact same
+        # resolve_active_model() run_slate() itself calls (Phase 4).
+        # Previously always the hardcoded baseline constant, which would
+        # have been stale/wrong the moment any challenger was promoted.
+        model_version=resolved_model.model_version,
         decision_policy_version=DECISION_POLICY_VERSION,
         feature_set_version=FEATURE_SET_VERSION,
         decision_edge_threshold=settings.decision_edge_threshold,
         git_commit_sha=git_commit_sha,
+        active_model=active_model_out,
         blocking_issues=blocking_issues,
     )
 

@@ -179,6 +179,38 @@ export default function AdminPage() {
             </div>
           </section>
 
+          <section className={styles.section}>
+            <h2 className={styles.sectionTitle}>Active Model</h2>
+            {status.active_model ? (
+              <div className={styles.activeModel}>
+                <span className={styles.activeModelTitle}>
+                  {status.active_model.fitted_model_version}
+                </span>
+                <div className={styles.activeModelMeta}>
+                  <span>family: {status.active_model.model_family}</span>
+                  <span>trained: {new Date(status.active_model.trained_at).toLocaleString()}</span>
+                  <span>
+                    activated: {new Date(status.active_model.activated_at).toLocaleString()} by{" "}
+                    {status.active_model.activated_by}
+                  </span>
+                </div>
+                <div className={styles.activeModelMeta}>
+                  <span>dataset: {status.active_model.training_dataset_id}</span>
+                  {Object.entries(status.active_model.training_metrics).map(([key, value]) => (
+                    <span key={key}>
+                      {key}: {typeof value === "number" ? value.toFixed(4) : String(value)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className={styles.empty}>
+                Permanent baseline ({status.model_version}) -- no challenger has been promoted.
+                Promote one with <code>cassandra promote-model</code>.
+              </p>
+            )}
+          </section>
+
           {status.blocking_issues.length > 0 && (
             <section className={styles.section}>
               <h2 className={styles.sectionTitle}>Blocking Issues</h2>

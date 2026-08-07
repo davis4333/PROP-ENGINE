@@ -1131,3 +1131,76 @@ live, and roll back, all real, all human-gated. What's still not built:
 a shadow-mode runner (evaluating a candidate against live slates without
 its predictions ever reaching `projections`/`grades`) and an Admin-page
 view of any of this (CLI-only so far -- 4.4, next).
+
+### 4.4 -- Admin visibility for the active model (done)
+
+The registry was fully functional after 4.3 but entirely invisible
+outside the CLI -- Tyler would have had no way to see which model is
+actually live without SSH-ing in and running `cassandra model-status`.
+Closes the directive's "displaying operational/historical/model/
+performance status in Admin" requirement for the model-registry piece
+specifically (source health, pipeline runs, and versions were already
+real from earlier phases).
+
+Backend: `AdminStatusResponse` gained `active_model: ActiveModelOut |
+None` (`artifact_id`, `model_family`, `fitted_model_version`,
+`trained_at`, `training_dataset_id`, `training_metrics`, `activated_at`,
+`activated_by` -- null whenever nothing is promoted). Also fixed a real
+accuracy gap this surfaced: `AdminStatusResponse.model_version` was
+still the hardcoded permanent-baseline constant even after 4.2/4.3 made
+it possible for the live pipeline to actually be serving a promoted
+challenger -- Admin would have kept claiming "k-model-0.1.0" forever
+regardless of what `run_slate()` was really using. Now computed via the
+exact same `resolve_active_model()` call `run_slate()` itself makes, not
+a parallel re-derivation that could drift out of sync.
+
+Frontend: Admin page (`web/src/app/admin/page.tsx`) gained an "Active
+Model" section between Versions and Source Health -- the fitted version
+string, family, trained/activated timestamps and who activated it,
+dataset ID, and training metrics when a challenger is active; "Permanent
+baseline ... no challenger has been promoted. Promote one with
+`cassandra promote-model`." when not. Styled with the existing violet
+accent (`rgba(139, 92, 246, ...)`, matching the page's own `.button`
+class) rather than inventing a new color -- no new page added (ADR
+0012's scope limit respected, this only extends the existing Admin
+page).
+
+Verified with a real UI check, not just the type/lint/test suite (per
+this repo's own "start the dev server and use the feature in a browser"
+requirement for UI changes): started the real engine API and Next.js dev
+server against the shared dev database, created and promoted a real
+synthetic artifact via the actual `registry/service.py` functions,
+confirmed `/api/admin/status` returned the populated `active_model`
+object over HTTP, then used Playwright (headless Chromium, the
+environment's pre-installed browser) to screenshot the live Admin page
+in both states: the active-model card showing real training metrics, and
+(after `rollback-model`) the "Permanent baseline... " message. Both
+screenshots confirmed the near-black/violet-glow design language renders
+correctly. Rolled the demo artifact back via the CLI itself and stopped
+both dev processes afterward -- the dev database ends this stage with no
+promoted model, matching its state before this check began (the artifact
+row itself remains, append-only, same as every other artifact this
+session created).
+
+Tests: 2 new in `test_admin_router.py` -- `active_model` is `null` with
+the baseline `model_version` reported when nothing's promoted; a real
+promoted artifact (created via `create_model_artifact`/
+`register_as_candidate`/`promote_to_active` directly on the test's own
+rolled-back `db_session`) is fully reflected in both `model_version` and
+`active_model`'s fields, including who activated it.
+
+Verified: 386 backend tests passing (384 + 2) against a fresh scratch
+database, ruff/mypy/guardrails clean; frontend `tsc --noEmit`/`eslint`/
+`vitest` (26 tests, unchanged -- no new component test file, matching
+this project's existing convention of not unit-testing whole pages
+directly) all clean; real browser screenshots confirming both UI states.
+
+**This completes Phase 4 as scoped.** What remains deliberately out of
+scope, not silently dropped: a shadow-mode runner (evaluating a
+candidate against live slates without publishing its predictions), a
+second model family (negative-binomial/gradient-boosted), and an
+Admin-page action to trigger promote/rollback directly (CLI-only for
+now -- deliberately, since ADR 0012 requires checking with the owner
+before adding new interactive surface to Admin, and a promote/rollback
+button is a more consequential UI addition than a read-only status
+display).

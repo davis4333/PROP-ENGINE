@@ -515,18 +515,42 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   row, reconstructs a model from it, and the command raises if either the
   reloaded coefficients or the reloaded model's re-evaluated metrics
   don't exactly match the original fit. Registers as `CANDIDATE` only
-  with `--register`. **No automatic promotion anywhere**: `CANDIDATE` is
-  the only status any code in this build can reach --
-  `MODEL_REGISTRY_STATES` defines the full `SHADOW`/`APPROVED`/`ACTIVE`/
-  `RETIRED`/`REJECTED`/`ROLLED_BACK` vocabulary and the schema/CHECK
-  constraint supports it, but no promotion/shadow/rollback action is
-  wired to anything -- reaching those states requires code that doesn't
-  exist yet, not a flag or a config value. The registry is also not yet
-  wired into the live decision engine/`run_slate()` at all (both still
-  only ever use the permanent, unmodified `models/baseline.py` model,
-  same as before this phase) -- deliberately out of scope for this pass;
-  see this document's own "Next smallest task" section.
-- **Not yet built**: negative-binomial/gradient-boosted challenger
+  with `--register`.
+- **The registry is wired into the live decision engine and a human can
+  actually promote/roll back a model (Phase 4)**: `run_slate()`'s PROJECT
+  stage now calls `registry/service.py`'s `resolve_active_model()` --
+  whichever artifact's latest registry event is `ACTIVE`, reconstructed
+  via the new numpy-free `models/poisson_regression.py` (split out of
+  `historical/challenger_poisson.py` specifically so the live pipeline
+  never needs `numpy` installed), or the permanent, unmodified baseline
+  whenever nothing is `ACTIVE` -- structurally guaranteed, not by
+  convention. Every published projection's `model_version` is now the
+  ACTUAL model that produced it (a specific artifact's
+  `fitted_model_version`, not just the shared family-level code version)
+  -- verified end to end against the real 2023-06-15 fixture slate.
+  `cassandra promote-model --artifact-id ... --operator ...` atomically
+  retires whatever was previously `ACTIVE` and activates the new one in
+  the same transaction (refusing anything not currently
+  `CANDIDATE`/`APPROVED`, or an unsupported `model_family`);  `cassandra
+  rollback-model --operator ... --reason ...` retires the current
+  `ACTIVE` artifact as `ROLLED_BACK` (falling back to the baseline by
+  default, or reactivating a specific prior artifact via
+  `--to-artifact-id`); `cassandra model-status` shows what's currently
+  live plus recent registry history. **No automatic promotion anywhere**
+  -- every one of these requires an explicit human `--operator` identity
+  and none is reachable from any scheduled/automated code path.
+  `SHADOW`/`APPROVED`/`REJECTED` remain schema-supported (`CHECK`
+  constraint, full vocabulary) but unreached by any real code path -- no
+  shadow-mode runner or approval-gate action exists yet. Also surfaced in
+  Admin: `GET /api/admin/status`'s `active_model` field (null when
+  nothing's promoted) and a new "Active Model" section on the Admin page
+  showing the live model's provenance/training metrics/who activated it
+  -- verified with real browser screenshots (Playwright), not just the
+  automated test suite, in both the active-challenger and
+  baseline-fallback states.
+- **Not yet built**: a shadow-mode runner (evaluating a `CANDIDATE`
+  against live slates without its predictions ever reaching
+  `projections`/`grades`), negative-binomial/gradient-boosted challenger
   alternatives. See `docs/TRAINING_READINESS_REPORT.md` for the
   full "what's still not built" list. Also not yet collected/implemented
   (reported honestly, not silently omitted -- every dataset manifest/row
@@ -789,15 +813,19 @@ handbook's explicitly unresolved product decisions this build built
 around rather than guessed at — each is a clean adapter/seam swap, not a
 rearchitecture.
 
-A model artifact + registry system now exists (`db/models/registry.py`,
-`registry/service.py`, `cassandra train-final-model`), but nothing wires
-it into the live pipeline yet — `decision/engine.py`/`orchestration/
-run_slate.py` still only ever call the permanent, unmodified baseline.
-The natural next slice: an admin-triggerable promotion action (CANDIDATE
-→ ACTIVE, requiring an authenticated human per the mission directive),
-enforcing exactly one ACTIVE model at a time with the permanent baseline
-as the guaranteed fallback when none is ACTIVE, and a shadow-mode runner
-that evaluates the ACTIVE model's challenger(s) against live slates
-without their predictions ever reaching `projections`/`grades`. None of
-this was invented here — it's flagged as real, well-scoped future work,
-not guessed at silently.
+The model artifact + registry system (`db/models/registry.py`,
+`registry/service.py`, `cassandra train-final-model`/`promote-model`/
+`rollback-model`/`model-status`) is now fully wired into the live
+pipeline (Phase 4 of `docs/FINAL_COMPLETION_WORKLOG.md`) — a human can
+train, evaluate, register, promote, and roll back a real challenger,
+with `run_slate()` actually serving whichever model is `ACTIVE` and the
+permanent baseline as the structurally-guaranteed fallback. The natural
+next slice from here: a shadow-mode runner that evaluates a `CANDIDATE`
+against live slates without its predictions ever reaching
+`projections`/`grades` (lets a human compare a challenger's real-world
+behavior before promoting it, beyond what backtested walk-forward
+validation already shows), and a second model family
+(negative-binomial/gradient-boosted) to actually exercise
+`SUPPORTED_LIVE_MODEL_FAMILIES`' multi-family design. None of this was
+invented here — it's flagged as real, well-scoped future work, not
+guessed at silently.

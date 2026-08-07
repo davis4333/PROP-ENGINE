@@ -22,6 +22,7 @@ from cassandra.db.models.identity import Game, Player
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
 from cassandra.db.models.raw import RawProbablePitcher
 from cassandra.db.models.sources import Source, SourceHealth
+from cassandra.registry.service import create_model_artifact, promote_to_active, register_as_candidate
 
 AUTH = {"X-Admin-Secret": settings.admin_shared_secret}
 
@@ -272,3 +273,59 @@ def test_lines_import_writes_matched_entries_and_reports_unmatched(client, db_se
     assert body["records_written"] == 1
     assert len(body["not_imported"]) == 1
     assert "Nobody Real" in body["not_imported"][0]
+
+
+def test_admin_status_active_model_is_null_when_nothing_is_promoted(client, monkeypatch):
+    monkeypatch.setattr(admin_router, "get_git_commit_sha", lambda: "deadbeef1234")
+    response = client.get("/api/admin/status", headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active_model"] is None
+    assert body["model_version"] == "k-model-0.1.0"  # falls back to the permanent baseline
+
+
+def test_admin_status_surfaces_the_active_model_when_one_is_promoted(client, db_session, monkeypatch):
+    monkeypatch.setattr(admin_router, "get_git_commit_sha", lambda: "deadbeef1234")
+    artifact = create_model_artifact(
+        db_session,
+        model_family="poisson-regression",
+        model_code_version="poisson-regression-challenger-0.1.0",
+        coefficients=[0.5, 0.1, 2.0, -0.02, 0.0],
+        coefficient_order=[
+            "intercept",
+            "log1p_expected_bf",
+            "recent_k_rate",
+            "rest_days",
+            "rest_days_missing",
+        ],
+        preprocessing_rules={},
+        training_dataset_id="ds_admin_test",
+        dataset_builder_version="v1",
+        availability_policy_version="v1",
+        feature_set_version="v1",
+        training_seasons=[2023],
+        training_game_types=["R"],
+        training_row_count=500,
+        trained_at=datetime(2026, 8, 1, tzinfo=UTC),
+        dependency_versions={},
+        training_metrics={"mae": 1.5, "rmse": 1.9},
+        evaluation_report_ids=[],
+        created_by="tester",
+    )
+    register_as_candidate(db_session, artifact_id=artifact.artifact_id, operator="tester")
+    promote_to_active(db_session, artifact_id=artifact.artifact_id, operator="tester", reason="admin test")
+    db_session.flush()
+
+    response = client.get("/api/admin/status", headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["model_version"] == artifact.fitted_model_version
+    assert body["active_model"] is not None
+    assert body["active_model"]["artifact_id"] == artifact.artifact_id
+    assert body["active_model"]["model_family"] == "poisson-regression"
+    assert body["active_model"]["fitted_model_version"] == artifact.fitted_model_version
+    assert body["active_model"]["training_dataset_id"] == "ds_admin_test"
+    assert body["active_model"]["training_metrics"] == {"mae": 1.5, "rmse": 1.9}
+    assert body["active_model"]["activated_by"] == "tester"
