@@ -158,6 +158,19 @@ and take under a minute to set up.
      page; see ADR 0011 — it's explicitly not production-grade auth).
    - Optionally `DECISION_EDGE_THRESHOLD` / `OPERATING_TIMEZONE` to
      override the defaults in `.env.example`.
+   - Optionally `GIT_COMMIT_SHA` — set it to the commit you're actually
+     deploying (Replit has no `.git` directory to introspect at
+     runtime, unlike local/CI runs, which fall back to `git rev-parse
+     HEAD` automatically). Without it, `/health` and the Admin page's
+     `git_commit_sha` field report `null` and Admin surfaces a visible
+     warning under Blocking Issues — set this on every deploy so you can
+     always confirm which commit is actually live. A simple way to keep
+     it accurate: set it as part of your deploy step to
+     `$(git rev-parse HEAD)` from whatever machine/CI triggers the
+     deploy, rather than typing a SHA in by hand.
+   - Optionally `SCHEDULER_POLL_INTERVAL_SECONDS` /
+     `SCHEDULER_GRADE_LOOKBACK_DAYS` to override the scheduler's default
+     15-minute poll interval / 3-day grading lookback window.
    - Optionally `ODDS_API_KEY` — a real key from
      [the-odds-api.com](https://the-odds-api.com) switches lines from the
      manual/fixture drop-folder to real regulated-sportsbook pitcher-
@@ -218,6 +231,37 @@ and take under a minute to set up.
    against the deployed root URL that you get real HTML (or at least
    `content-type: text/html`), not a JSON body, before considering the
    deployment done.
+
+### Before redeploying a live instance: back up the database
+
+`scripts/replit_start.sh` always runs `alembic upgrade head`
+automatically on startup, with no manual confirmation step — every
+redeploy that pulls new commits may apply a new migration immediately.
+Back up before redeploying a live production instance, every time, even
+for a migration that looks purely additive:
+
+- **Neon**: use its **Branching** feature to snapshot the current data
+  before redeploying, or run a manual dump (below) — see
+  [Neon's backup docs](https://neon.tech/docs/manage/backups).
+- **Supabase**: use its **Database → Backups** page to trigger a manual
+  backup, or run a manual dump (below) — see
+  [Supabase's backup docs](https://supabase.com/docs/guides/platform/backups).
+- **Manual dump** (works against any Postgres connection string):
+  ```bash
+  pg_dump "$DATABASE_URL" --format=custom --file="cassandra-backup-$(date +%Y%m%dT%H%M%S).dump"
+  ```
+  Restore with `pg_restore --dbname="$DATABASE_URL" <file>` if ever
+  needed.
+
+Every migration under
+`engine/src/cassandra/db/migrations/versions/` has a real `downgrade()`
+— verified as part of this build by a full `alembic downgrade base` then
+`alembic upgrade head` round-trip against a scratch database (no drift
+detected by `alembic check` afterward). But `alembic downgrade` is not a
+substitute for a real backup: some downgrades are inherently lossy
+(dropping a column loses whatever data was in it), and a downgrade only
+undoes schema — it never restores data a bad deploy corrupted or deleted
+outside of what that one migration touched. Take the backup first.
 
 This configuration has been exercised against a live Replit account,
 including a Reserved VM Deployment (external Neon/Supabase Postgres,
