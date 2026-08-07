@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import random
 import re
-import subprocess
+import subprocess  # nosec B404 -- only used below with a fixed argv, no shell
 import time
 import uuid
 from dataclasses import dataclass
@@ -125,7 +125,11 @@ def _current_commit_sha() -> str | None:
     correctness, so a missing git binary or a non-repo checkout (e.g. a
     packaged deploy) must not fail the backfill."""
     try:
-        result = subprocess.run(
+        # Fixed argv, no shell, no untrusted input -- not the command
+        # injection / partial-path risk bandit's B603/B607 generically
+        # flag subprocess calls for (same suppression as config.py's
+        # identical get_git_commit_sha() pattern).
+        result = subprocess.run(  # nosec B603 B607
             ["git", "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
@@ -139,7 +143,7 @@ def _current_commit_sha() -> str | None:
 
 
 def _sleep_with_jitter(base_delay: float) -> None:
-    time.sleep(base_delay + random.uniform(0, base_delay * 0.25))  # noqa: S311 -- pacing jitter, not security
+    time.sleep(base_delay + random.uniform(0, base_delay * 0.25))  # nosec B311 -- noqa: S311 -- pacing jitter, not security
 
 
 def _request_with_retry(
