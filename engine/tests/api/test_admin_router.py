@@ -12,17 +12,21 @@ API wiring on top of it."""
 from __future__ import annotations
 
 from datetime import UTC, datetime, time
+from uuid import uuid4
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cassandra.api import deps
 from cassandra.api.routers import admin as admin_router
 from cassandra.config import settings
+from cassandra.db.models.grading import Grade
 from cassandra.db.models.identity import Game, Player
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
 from cassandra.db.models.raw import RawProbablePitcher
 from cassandra.db.models.sources import Source, SourceHealth
 from cassandra.registry.service import create_model_artifact, promote_to_active, register_as_candidate
+
+from ._helpers import publish
 
 AUTH = {"X-Admin-Secret": settings.admin_shared_secret}
 
@@ -406,4 +410,83 @@ def test_admin_status_surfaces_a_registered_but_unpromoted_candidate(client, db_
     assert candidate["status"] == "CANDIDATE"
     assert candidate["created_by"] == "auto-retrain-scheduler"
     assert candidate["training_dataset_id"] == "ds_pending_test"
+
+
     assert candidate["notes"] == "registered automatically"
+
+
+def test_admin_status_includes_a_zeroed_tracker_by_default(client):
+    response = client.get("/api/admin/status", headers=AUTH)
+    assert response.status_code == 200
+    tracker = response.json()["tracker"]
+    assert tracker["wins"] == 0
+    assert tracker["losses"] == 0
+    assert tracker["win_rate"] is None
+    assert tracker["last_reset_by"] is None
+
+
+def test_admin_status_tracker_reflects_real_grades(client, db_session):
+    row = publish(
+        db_session, game_id="api-admin-tracker-1", player_id="api-admin-tracker-player-1", line=3.5, mean=9.0
+    )
+    grade = Grade(
+        grade_id=uuid4(), projection_id=row.projection_id, graded_at=datetime.now(UTC), result="WIN"
+    )
+    db_session.add(grade)
+    db_session.flush()
+
+    response = client.get("/api/admin/status", headers=AUTH)
+
+    assert response.status_code == 200
+    tracker = response.json()["tracker"]
+    assert tracker["wins"] == 1
+    assert tracker["win_rate"] == 1.0
+
+
+def test_reset_tracker_endpoint_requires_auth(client):
+    response = client.post("/api/admin/tracker/reset")
+    assert response.status_code == 401
+
+
+def test_reset_tracker_endpoint_zeroes_the_count_and_records_who(client, db_session):
+    # graded_at is deliberately a fixed past date, not datetime.now(UTC):
+    # this whole test runs inside one shared transaction (db_session/
+    # client fixtures), and Postgres's now() -- what reset_tracker()'s
+    # created_at server_default actually evaluates to -- is frozen at
+    # that transaction's start, which is BEFORE any Python-side
+    # datetime.now(UTC) call made later in the test body. A wall-clock
+    # "before" timestamp would therefore already read as after the
+    # reset's server-side timestamp, which only happens under this
+    # single-shared-transaction test harness -- a real admin request is
+    # its own separate transaction, so this ordering is never actually
+    # ambiguous in production.
+    row = publish(
+        db_session, game_id="api-admin-tracker-2", player_id="api-admin-tracker-player-2", line=3.5, mean=9.0
+    )
+    grade = Grade(
+        grade_id=uuid4(),
+        projection_id=row.projection_id,
+        graded_at=datetime(2020, 1, 1, tzinfo=UTC),
+        result="LOSS",
+    )
+    db_session.add(grade)
+    db_session.flush()
+
+    before = client.get("/api/admin/status", headers=AUTH).json()["tracker"]
+    assert before["losses"] == 1
+
+    reset_response = client.post("/api/admin/tracker/reset", headers=AUTH, json={"operator": "tyler"})
+    assert reset_response.status_code == 200
+    reset_body = reset_response.json()
+    assert reset_body["losses"] == 0
+    assert reset_body["last_reset_by"] == "tyler"
+
+    after = client.get("/api/admin/status", headers=AUTH).json()["tracker"]
+    assert after["losses"] == 0
+    assert after["last_reset_by"] == "tyler"
+
+    # The underlying grade row itself is untouched -- only what the
+    # tracker counts changed, never the permanent record.
+    reloaded = db_session.get(Grade, grade.grade_id)
+    assert reloaded is not None
+    assert reloaded.result == "LOSS"

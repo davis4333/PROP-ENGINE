@@ -9,6 +9,7 @@ import {
   fetchAdminStatus,
   importLines,
   previewLineImport,
+  resetTracker,
   triggerGrade,
   triggerRun,
 } from "@/lib/api";
@@ -36,6 +37,11 @@ export default function AdminPage() {
   );
   const [lineImportError, setLineImportError] = useState<string | null>(null);
   const [lineImportPending, setLineImportPending] = useState(false);
+
+  const [trackerResetPending, setTrackerResetPending] = useState(false);
+  const [trackerResetError, setTrackerResetError] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     const stored = sessionStorage.getItem(SECRET_STORAGE_KEY);
@@ -89,6 +95,28 @@ export default function AdminPage() {
       setActionError(`Failed to trigger ${kind}. See engine logs for details.`);
     } finally {
       setActionPending(false);
+    }
+  }
+
+  async function handleResetTracker() {
+    if (!secret) return;
+    if (
+      !window.confirm(
+        "Reset the win/loss tracker to 0-0? This only resets the counter -- the permanent Ledger history is never affected.",
+      )
+    ) {
+      return;
+    }
+    setTrackerResetPending(true);
+    setTrackerResetError(null);
+    try {
+      await resetTracker(secret);
+      const refreshed = await fetchAdminStatus(secret);
+      setStatus(refreshed);
+    } catch {
+      setTrackerResetError("Failed to reset the tracker. See engine logs for details.");
+    } finally {
+      setTrackerResetPending(false);
     }
   }
 
@@ -247,6 +275,54 @@ export default function AdminPage() {
               </div>
             </section>
           )}
+
+          <section className={styles.section}>
+            <h2 className={styles.sectionTitle}>Performance Tracker</h2>
+            <p className={styles.subtitle}>
+              A resettable win/loss counter since{" "}
+              {new Date(status.tracker.tracker_started_at).toLocaleString()}
+              {status.tracker.last_reset_by
+                ? ` (reset by ${status.tracker.last_reset_by})`
+                : " (never reset)"}
+              . The Ledger page always shows the full, permanent history --
+              resetting this counter never touches it.
+            </p>
+            <div className={styles.trackerRow}>
+              <div className={styles.trackerStat}>
+                <span className={styles.trackerStatValue}>{status.tracker.wins}</span>
+                <span className={styles.trackerStatLabel}>Wins</span>
+              </div>
+              <div className={styles.trackerStat}>
+                <span className={styles.trackerStatValue}>{status.tracker.losses}</span>
+                <span className={styles.trackerStatLabel}>Losses</span>
+              </div>
+              <div className={styles.trackerStat}>
+                <span className={styles.trackerStatValue}>{status.tracker.pushes}</span>
+                <span className={styles.trackerStatLabel}>Pushes</span>
+              </div>
+              <div className={styles.trackerStat}>
+                <span className={styles.trackerStatValue}>{status.tracker.voids}</span>
+                <span className={styles.trackerStatLabel}>Voids</span>
+              </div>
+              <div className={styles.trackerStat}>
+                <span className={styles.trackerStatValue}>
+                  {status.tracker.win_rate !== null
+                    ? `${(status.tracker.win_rate * 100).toFixed(1)}%`
+                    : "—"}
+                </span>
+                <span className={styles.trackerStatLabel}>Win Rate</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              className={styles.button}
+              disabled={trackerResetPending}
+              onClick={handleResetTracker}
+            >
+              {trackerResetPending ? "Resetting…" : "Reset Tracker to 0-0"}
+            </button>
+            {trackerResetError && <p className={styles.error}>{trackerResetError}</p>}
+          </section>
 
           {status.blocking_issues.length > 0 && (
             <section className={styles.section}>

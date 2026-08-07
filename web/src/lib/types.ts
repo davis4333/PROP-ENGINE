@@ -107,6 +107,17 @@ export interface PendingModelCandidateOut {
   notes: string | null;
 }
 
+export interface TrackerSummaryOut {
+  wins: number;
+  losses: number;
+  pushes: number;
+  voids: number;
+  no_plays: number;
+  win_rate: number | null;
+  tracker_started_at: string;
+  last_reset_by: string | null;
+}
+
 export interface AdminStatusResponse {
   sources: SourceHealthOut[];
   recent_runs: PipelineRunOut[];
@@ -117,6 +128,7 @@ export interface AdminStatusResponse {
   git_commit_sha: string | null;
   active_model: ActiveModelOut | null;
   pending_model_candidates: PendingModelCandidateOut[];
+  tracker: TrackerSummaryOut;
   blocking_issues: string[];
 }
 

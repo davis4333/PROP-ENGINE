@@ -59,6 +59,30 @@ def test_today_includes_grade_when_available(client, db_session):
     assert projections[0]["grade"]["actual_strikeouts"] == 7
 
 
+def test_today_sorts_qualified_picks_before_no_plays(client, db_session):
+    # A clear-edge QUALIFIED pick and a no-line REJECTED row on the same
+    # slate -- regardless of insertion order, the qualified pick with a
+    # real tradeable edge must render first.
+    rejected = publish(
+        db_session, game_id="api-today-sort-1", player_id="api-today-sort-player-1", line=None, mean=6.0
+    )
+    qualified = publish(
+        db_session, game_id="api-today-sort-2", player_id="api-today-sort-player-2", line=3.5, mean=9.0
+    )
+    game = db_session.get(Game, qualified.game_id)
+    slate_date = slate_date_for(game.scheduled_start_utc)
+
+    response = client.get("/api/today", params={"slate_date": slate_date.isoformat()})
+
+    assert response.status_code == 200
+    projections = response.json()["projections"]
+    assert len(projections) == 2
+    assert projections[0]["projection_id"] == qualified.projection_id
+    assert projections[0]["decision_status"] == "QUALIFIED"
+    assert projections[1]["projection_id"] == rejected.projection_id
+    assert projections[1]["decision_status"] == "REJECTED"
+
+
 def test_today_empty_slate_returns_zero_counts_not_an_error(client):
     response = client.get("/api/today", params={"slate_date": "2019-01-01"})
 

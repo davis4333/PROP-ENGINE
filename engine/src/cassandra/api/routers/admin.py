@@ -33,6 +33,7 @@ from cassandra.api.schemas import (
     PipelineStageOut,
     RunActionResponse,
     SourceHealthOut,
+    TrackerSummaryOut,
     UnmatchedLineImportEntryOut,
 )
 from cassandra.config import get_git_commit_sha, settings
@@ -41,6 +42,7 @@ from cassandra.db.models.registry import ModelArtifact, ModelRegistryEvent
 from cassandra.db.models.sources import SourceHealth
 from cassandra.decision.engine import DECISION_POLICY_VERSION
 from cassandra.features.builders import FEATURE_SET_VERSION
+from cassandra.grading.tracker import reset_tracker, tracker_summary
 from cassandra.ingestion.manual_line_import import LineImportEntry, commit_line_import, preview_line_import
 from cassandra.orchestration.run_slate import grade_slate_run, run_slate
 from cassandra.registry.service import current_status, pending_candidates, resolve_active_model
@@ -194,8 +196,35 @@ def get_admin_status(db: Session = Depends(get_db)) -> AdminStatusResponse:
         git_commit_sha=git_commit_sha,
         active_model=active_model_out,
         pending_model_candidates=pending_candidate_outs,
+        tracker=_tracker_out(db),
         blocking_issues=blocking_issues,
     )
+
+
+def _tracker_out(db: Session) -> TrackerSummaryOut:
+    summary = tracker_summary(db)
+    return TrackerSummaryOut(
+        wins=summary.wins,
+        losses=summary.losses,
+        pushes=summary.pushes,
+        voids=summary.voids,
+        no_plays=summary.no_plays,
+        win_rate=summary.win_rate,
+        tracker_started_at=summary.tracker_started_at,
+        last_reset_by=summary.last_reset_by,
+    )
+
+
+@router.post("/tracker/reset", response_model=TrackerSummaryOut)
+def reset_tracker_action(
+    operator: str | None = Body(default=None, embed=True),
+    db: Session = Depends(get_db),
+) -> TrackerSummaryOut:
+    """Records a new tracker_reset audit event -- never touches any grades
+    row (grading/tracker.py's module docstring). The response is the
+    freshly-zeroed summary counting from this moment on."""
+    reset_tracker(db, operator=operator or "admin-ui")
+    return _tracker_out(db)
 
 
 @router.post("/runs/{slate_date}/run", response_model=RunActionResponse)

@@ -138,6 +138,23 @@ class PendingModelCandidateOut(BaseModel):
     notes: str | None
 
 
+class TrackerSummaryOut(BaseModel):
+    """A resettable win/loss counter, not the permanent record -- the
+    Ledger page already shows the full, un-resettable history. See
+    grading/tracker.py's module docstring: a reset only ever records a
+    new audit event, never touches a grades row (CLAUDE.md non-negotiable
+    #6, "losses are never deleted")."""
+
+    wins: int
+    losses: int
+    pushes: int
+    voids: int
+    no_plays: int
+    win_rate: float | None
+    tracker_started_at: datetime
+    last_reset_by: str | None
+
+
 class AdminStatusResponse(BaseModel):
     sources: list[SourceHealthOut]
     recent_runs: list[PipelineRunOut]
@@ -154,6 +171,7 @@ class AdminStatusResponse(BaseModel):
     # CANDIDATE/APPROVED artifacts not yet promoted or rejected -- empty
     # list in the common case (nothing pending review).
     pending_model_candidates: list[PendingModelCandidateOut]
+    tracker: TrackerSummaryOut
     blocking_issues: list[str]
 
 

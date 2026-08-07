@@ -624,6 +624,31 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   (so pitcher handedness isn't available), and the
   `RETROSPECTIVE_ENRICHED` tier (nothing enriched exists yet to build it
   from).
+- **Phase 6 -- Today best-picks-first sort, and a resettable Admin
+  win/loss tracker (real, wired in)**: `GET /api/today` now sorts
+  QUALIFIED picks first (highest model confidence --
+  `max(P(over), P(under))` -- descending), then UNCERTAIN/HELD, with
+  REJECTED (the true no-plays: missing data, incomplete market context,
+  etc.) always last regardless of any probability number they happen to
+  carry, since that number was never a real tradeable edge
+  (`api/routers/today.py`'s `_today_sort_key`) -- verified against real
+  seeded slate data in a browser, not just the unit/API test suite.
+  Separately, the Admin page gained a "Performance Tracker" section
+  (`GET /api/admin/status`'s `tracker` field): a running WIN/LOSS/PUSH/
+  VOID/NO_PLAY count and win rate over LIVE-labeled grades, with a
+  "Reset Tracker to 0-0" button (`POST /api/admin/tracker/reset`).
+  CLAUDE.md non-negotiable #6 ("losses are never deleted") means a
+  reset can never touch a `grades` row -- it only ever records a new
+  `tracker_reset` `audit_events` row (append-only, same pattern as the
+  retraining scheduler's `retrain_attempted` events); the tracker's
+  counts are always computed live, filtered to `graded_at >=` the
+  latest reset's timestamp (`grading/tracker.py`). The permanent,
+  un-resettable full history is still exactly what the Ledger page
+  already shows -- resetting the counter never hides or removes
+  anything from it. Verified end-to-end with a real browser: seeded a
+  LIVE loss, confirmed it counted, clicked Reset (with its confirm
+  dialog), confirmed the count zeroed and the underlying grade row was
+  unchanged.
 - **Backfill run status: complete.** The 2023-01-01-to-present backfill
   (`backfill_run_id=backfill_8aae900893d7`) finished with `status=
   completed`, 0 failed games across its entire run, and a small number

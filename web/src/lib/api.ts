@@ -8,6 +8,7 @@ import type {
   ProjectionHistoryResponse,
   RunActionResponse,
   TodayResponse,
+  TrackerSummaryOut,
 } from "./types";
 
 /** Server Components (Today/Ledger) run inside the Next.js server process
@@ -109,6 +110,17 @@ export function triggerGrade(
   return postJson(`/api/admin/runs/${encodeURIComponent(slateDate)}/grade`, {
     "X-Admin-Secret": secret,
   });
+}
+
+export function resetTracker(
+  secret: string,
+  operator?: string,
+): Promise<TrackerSummaryOut> {
+  return postJson(
+    `/api/admin/tracker/reset`,
+    { "X-Admin-Secret": secret },
+    { operator: operator ?? null },
+  );
 }
 
 export function previewLineImport(
