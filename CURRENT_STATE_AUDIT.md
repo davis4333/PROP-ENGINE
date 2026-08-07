@@ -150,10 +150,23 @@ against real (not mocked) data during this build.
   The decision engine only ever calls the model through the
   `StrikeoutModel`/`StrikeoutDistribution` interface (ADR 0003) — no
   distribution family is hardcoded outside `models/`.
-- Decision engine (`decision/engine.py`, `k-decision-0.1.0`): edge vs. a
+- Decision engine (`decision/engine.py`, `k-decision-0.2.0`): edge vs. a
   neutral 0.5 baseline (never called an "Underdog-implied probability" —
   ADR 0006), the full Appendix A reason-code catalog, OVER/UNDER/NO_PLAY
-  × QUALIFIED/UNCERTAIN/HELD/REJECTED.
+  × QUALIFIED/UNCERTAIN/HELD/REJECTED. **Known gap**: the version was
+  `k-decision-0.1.0` from initial build through two real logic fixes
+  (Phase 1D's integer-line push-probability correction, Phase 1F's
+  missing-line/synthetic-edge correction) that changed what gets
+  computed for real inputs — neither fix bumped the version at the time,
+  which an audit later caught (see
+  `docs/FINAL_COMPLETION_WORKLOG.md`). Bumped to `0.2.0` when found.
+  Practical consequence: any projection published under
+  `k-decision-0.1.0` cannot be distinguished as pre- or post-fix from
+  `decision_policy_version` alone — both bugs and their fixes happened
+  under that same version string, so ADR 0010's reproducibility
+  guarantee is incomplete for that historical window specifically.
+  Going forward, `0.1.0` will never be reused and every future logic
+  change gets its own bump.
 
 ### Ledger and grading
 

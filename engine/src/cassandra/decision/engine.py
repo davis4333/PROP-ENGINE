@@ -35,7 +35,18 @@ from cassandra.models.interface import StrikeoutDistribution
 # Bumped whenever this decision logic/thresholds change, independent of
 # model_version (ADR 0010) -- a projection permanently pins whichever
 # policy version produced it.
-DECISION_POLICY_VERSION = "k-decision-0.1.0"
+#
+# Bumped to 0.2.0 here after an audit found it was never bumped for two
+# real logic changes to what gets computed for real inputs: the integer-
+# line push-probability fix (probability_under was `1 - probability_over`,
+# silently folding P(K==line) into "under") and the missing-line fix
+# (a caller-supplied synthetic 0.5 line could compute a real "edge" and
+# reach QUALIFIED against a line that was never real). Any projection
+# published under "k-decision-0.1.0" cannot be distinguished as pre- or
+# post-fix from decision_policy_version alone -- both those bugs and
+# their fixes happened under that same version string. Documented, not
+# silently left as a gap: see CURRENT_STATE_AUDIT.md.
+DECISION_POLICY_VERSION = "k-decision-0.2.0"
 
 # WARN-severity findings serious enough to downgrade an otherwise-
 # qualifying edge to UNCERTAIN. Deliberately excludes DATA_MISSING (the

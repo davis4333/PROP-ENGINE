@@ -55,7 +55,7 @@ def test_admin_status_with_correct_secret_returns_versions_and_empty_state(clien
     assert response.status_code == 200
     body = response.json()
     assert body["model_version"] == "k-model-0.1.0"
-    assert body["decision_policy_version"] == "k-decision-0.1.0"
+    assert body["decision_policy_version"] == "k-decision-0.2.0"
     assert body["sources"] == []
     assert body["recent_runs"] == []
     assert body["git_commit_sha"] == "deadbeef1234"

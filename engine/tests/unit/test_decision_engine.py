@@ -191,7 +191,7 @@ def test_projection_sd_uses_poisson_sd_property():
 def test_decision_policy_version_recorded():
     dist = PoissonStrikeoutDistribution(mean=8.0)
     result = decide(5.5, dist, [])
-    assert result.decision_policy_version == "k-decision-0.1.0"
+    assert result.decision_policy_version == "k-decision-0.2.0"
 
 
 # --- reproducibility_hash ------------------------------------------------
@@ -203,7 +203,7 @@ def test_reproducibility_hash_deterministic():
         "feature_set_version": "k-features-0.1.0",
         "features": {"expected_bf": 23.0, "recent_k_rate": 0.25},
         "model_version": "k-model-0.1.0",
-        "decision_policy_version": "k-decision-0.1.0",
+        "decision_policy_version": "k-decision-0.2.0",
         "edge_threshold": 0.05,
         "git_commit_sha": "abc123",
     }
@@ -216,7 +216,7 @@ def test_reproducibility_hash_changes_with_inputs():
         "feature_set_version": "k-features-0.1.0",
         "features": {"expected_bf": 23.0, "recent_k_rate": 0.25},
         "model_version": "k-model-0.1.0",
-        "decision_policy_version": "k-decision-0.1.0",
+        "decision_policy_version": "k-decision-0.2.0",
         "edge_threshold": 0.05,
         "git_commit_sha": "abc123",
     }
