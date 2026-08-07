@@ -434,3 +434,63 @@ racing to start the same hour's run_slate() (that's Phase 2C's DB
 advisory-lock item, not yet implemented). `run_slate()`/`grade_slate_run()`
 being independently idempotent (per the module's own docstring) keeps a
 race harmless today, but the advisory lock is still open work.
+
+### 1E -- fixed
+
+Confirmed real by tracing `ingestion/ingest_service.py`'s
+`_update_source_health()`: `consecutive_failures` incremented on ANY
+`success=False`, including the three EXPECTED/non-error
+`unavailable_reason` values (`"pending"`, `"disabled"`,
+`"quota_limited"`) alongside genuine errors. The visible status label
+itself wasn't wrong (`_source_health_status()` already correctly labels
+these `PENDING`/`DISABLED`/`QUOTA_LIMITED`, never `FAILED`, and
+`api/routers/admin.py`'s `NEVER_BLOCKING_STATES` already excludes those
+labels from `blocking_issues` regardless of the counter) -- but the
+underlying counter itself was polluted. Traced the concrete failure
+scenario this causes: a source that's legitimately `PENDING` for many
+ticks (e.g. a line that hasn't posted yet) silently accumulates a large
+`consecutive_failures` count; the moment a genuine error occurs
+afterward (`unavailable_reason` unset/`"error"`),
+`_source_health_status()` falls through to the real-failure branch and
+reads the now-inflated counter, so the FIRST real error after a long
+pending streak immediately reports `FAILED` (and becomes a live
+`blocking_issues` entry -- `FAILED` is not in `NEVER_BLOCKING_STATES`)
+instead of `DEGRADED`, misrepresenting a single fresh error as an
+already-persistent 3-in-a-row failure streak.
+
+Fix: `_update_source_health()` now only increments `consecutive_failures`
+for a genuine failure (`unavailable_reason` not in
+`{"pending", "disabled", "quota_limited"}`) -- an expected-unavailable
+tick leaves the counter untouched (neither incremented nor reset), so a
+real error streak starting after a long expected-unavailable period is
+correctly read as starting fresh. `last_failure_at`/`last_status` still
+update on every non-success tick as before (visibility into the last
+non-success tick is unaffected); only the failure-streak counter's
+semantics changed.
+
+Tests: 5 new/updated tests in `test_ingest_service.py`. Updated the
+existing `test_ingest_unavailable_source_still_writes_audit_and_health`
+(UmpireStubAdapter, `unavailable_reason="disabled"`), whose assertion had
+encoded the bug itself (`consecutive_failures == 1` for a permanent
+by-design stub) -- now asserts `== 0`. Added
+`test_pending_ticks_never_accumulate_consecutive_failures`,
+`test_quota_limited_ticks_never_accumulate_consecutive_failures`,
+`test_real_errors_still_accumulate_consecutive_failures` (proving the fix
+doesn't stop counting genuine errors), and
+`test_a_real_error_after_a_long_pending_streak_starts_a_fresh_streak_not_failed`
+(the exact scenario the audit described -- 10 PENDING ticks then 1 real
+error must read `consecutive_failures == 1`/`DEGRADED`, not `FAILED`),
+plus `test_success_still_resets_consecutive_failures_to_zero`. New tests
+call `_update_source_health()` directly (same pattern as 1C's direct
+`_run_slate_success_count_today()` tests) since it's the exact unit under
+audit. Confirmed via `git stash` that 4 of the 5 new/changed assertions
+fail against the pre-fix code (`5 == 0`, `11 == 1`, etc.); the 5th
+(genuine-error counting) correctly still passes pre-fix, since that
+behavior was never broken.
+
+Verified: 329 tests passing (324 + 5) against a fresh scratch database,
+ruff/mypy/guardrails clean.
+
+Remaining limitation: none identified -- this was a narrowly-scoped
+counter-semantics fix with no schema change and no behavior change for
+the genuine-failure path.

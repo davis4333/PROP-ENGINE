@@ -146,6 +146,16 @@ def _source_health_status(*, success: bool, unavailable_reason: str | None, cons
     return "FAILED" if consecutive_failures >= _DEGRADED_TO_FAILED_THRESHOLD else "DEGRADED"
 
 
+# Reasons an "unavailable" tick is expected/by-design, not a real fetch
+# error -- see db/models/sources.py's SOURCE_HEALTH_STATES. These must
+# never feed consecutive_failures, which exists specifically to count a
+# streak of REAL errors (the DEGRADED->FAILED escalation). A source that's
+# legitimately PENDING for hours (e.g. a line that hasn't posted yet)
+# must not silently arrive at FAILED the instant a genuine error occurs,
+# just because the counter was never actually counting failures.
+_EXPECTED_UNAVAILABLE_REASONS = frozenset({"pending", "disabled", "quota_limited"})
+
+
 def _update_source_health(
     session: Session,
     source_id: str,
@@ -154,9 +164,10 @@ def _update_source_health(
     success: bool,
     unavailable_reason: str | None = None,
 ) -> None:
+    is_real_failure = not success and unavailable_reason not in _EXPECTED_UNAVAILABLE_REASONS
     existing = session.get(SourceHealth, source_id)
     if existing is None:
-        consecutive_failures = 0 if success else 1
+        consecutive_failures = 1 if is_real_failure else 0
         session.add(
             SourceHealth(
                 source_id=source_id,
@@ -177,7 +188,8 @@ def _update_source_health(
         existing.consecutive_failures = 0
     else:
         existing.last_failure_at = now
-        existing.consecutive_failures = existing.consecutive_failures + 1
+        if is_real_failure:
+            existing.consecutive_failures = existing.consecutive_failures + 1
     existing.last_status = _source_health_status(
         success=success,
         unavailable_reason=unavailable_reason,
