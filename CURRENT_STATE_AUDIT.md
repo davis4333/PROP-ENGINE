@@ -698,6 +698,25 @@ to invent missing product decisions:
   — was run and verified directly outside Docker (this sandboxed session
   has no Docker daemon available). The compose file itself has not been
   exercised with an actual `docker compose up`.
+- **`scripts/replit_start.sh`'s deployment-mode process supervision**
+  (Phase 2, `docs/FINAL_COMPLETION_WORKLOG.md`'s 2A entry): the frontend
+  is now started as a second supervised background job instead of
+  running in the foreground, with a `wait -n` + `kill -0` pair deciding
+  which of the two died and tearing the other down, exiting non-zero so
+  the whole deployment visibly fails instead of leaving the frontend
+  serving alone against a dead engine. The bash logic itself was
+  exercised standalone (two isolated sandbox scripts simulating "engine
+  dies first" and "frontend dies first", both correctly identified which
+  process died, killed the other via the trap, and propagated the
+  correct exit code) and `bash -n` syntax-checked, but this session has
+  no Replit deployment access at all (see this document's own repeated
+  "no deploy access" notes) -- the real end-to-end behavior on an actual
+  Replit deployment (whether `wait -n`'s no-PID-argument form behaves
+  identically on Replit's actual bash version, whether Replit's
+  deployment platform actually treats a non-zero script exit as
+  "unhealthy"/restart-eligible the way this fix assumes) is **not yet
+  confirmed** and needs a real redeploy + an intentionally broken
+  migration (or similar) to verify.
 
 ## Not automatable from this session (need a human with repo admin)
 

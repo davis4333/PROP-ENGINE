@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Replit entrypoint: installs deps (idempotent), migrates the database,
-# starts the engine API in the background, then starts the frontend in
-# the foreground on the one publicly exposed port (see .replit).
+# then starts the engine API and the frontend (the one publicly exposed
+# port -- see .replit) as two supervised background processes. In
+# deployment mode, if either one exits unexpectedly the whole script
+# tears the other down and exits non-zero -- see the `wait -n` block
+# below -- so a dead engine can never leave the frontend serving alone
+# and looking falsely healthy.
 #
 # Replit has no managed Postgres -- DATABASE_URL must already point at an
 # external one (Neon/Supabase/Railway free tier, etc.), set as a Replit
@@ -54,7 +58,6 @@ if [ -n "${REPLIT_DEPLOYMENT:-}" ]; then
     echo "==> [engine] Applying database migrations"
     (cd "$REPO_ROOT/engine" && .venv/bin/python -m alembic upgrade head)
 
-    echo "==> [engine] Starting engine API on 127.0.0.1:8000 (auto-scheduler enabled)"
     # AUTO_SCHEDULER_ENABLED: fires run_slate() at 07:00 ET and re-grades
     # every 15 min. Off by default in config.py so that CLI/test runs
     # of the engine don't silently hit live MLB APIs.
@@ -63,20 +66,49 @@ if [ -n "${REPLIT_DEPLOYMENT:-}" ]; then
     # over localhost (see .replit API_BASE_URL and web/next.config.ts).
     # Binding loopback-only prevents Replit's port-detector from
     # picking up port 8000 as the public endpoint instead of 3000.
+    echo "==> [engine] Migrations complete -- starting engine API on 127.0.0.1:8000 (auto-scheduler enabled)"
     (cd "$REPO_ROOT/engine" && \
       AUTO_SCHEDULER_ENABLED=true \
       .venv/bin/uvicorn cassandra.api.main:app \
         --host 127.0.0.1 --port 8000)
   ) &
   ENGINE_PID=$!
-  trap 'kill $ENGINE_PID 2>/dev/null || true' EXIT
 
   echo "==> Production start (Next.js pre-built in deployment build step)"
   # PORT env var, not `-- --port 3000` -- the latter doesn't reliably
   # reach Next.js 15's CLI through pnpm's script-arg forwarding on
   # Replit; PORT is Next's own documented port override and isn't
-  # dependent on that forwarding working.
-  (cd "$REPO_ROOT/web" && PORT=3000 pnpm run start)
+  # dependent on that forwarding working. Backgrounded (not run in the
+  # foreground as before) so this script can supervise it alongside the
+  # engine -- see the `wait -n` block below for why.
+  (cd "$REPO_ROOT/web" && PORT=3000 pnpm run start) &
+  WEB_PID=$!
+
+  trap 'kill "$ENGINE_PID" "$WEB_PID" 2>/dev/null || true' EXIT
+
+  # Phase 2A: supervise both processes for the life of the deployment.
+  # Previously the frontend ran in the foreground while the engine ran
+  # as an unwatched background job -- a migration failure or an
+  # uncaught engine startup exception left the engine subshell dead
+  # while Next.js kept serving on port 3000, looking "healthy" to
+  # Replit's port-based healthcheck indefinitely even though every API
+  # call the frontend makes to the engine would silently fail from then
+  # on. Exactly one engine process and one frontend process are
+  # expected to run for the entire life of a healthy deployment, so
+  # either one exiting on its own -- for any reason -- is itself the
+  # failure signal; `wait -n` (no PID args, supported since bash 4.3)
+  # blocks until whichever background job finishes first. Whichever
+  # died, this kills the other and exits non-zero so Replit sees a
+  # crashed deployment (visibly unhealthy / restart-eligible) instead
+  # of a half-alive one silently serving broken pages forever.
+  wait -n
+  exit_code=$?
+  if kill -0 "$ENGINE_PID" 2>/dev/null; then
+    echo "==> [FATAL] frontend process (PID $WEB_PID) exited unexpectedly (code $exit_code) -- tearing down the deployment" >&2
+  else
+    echo "==> [FATAL] engine process (PID $ENGINE_PID) exited unexpectedly (code $exit_code) -- tearing down the deployment" >&2
+  fi
+  exit "${exit_code:-1}"
 
 else
   # =========================================================

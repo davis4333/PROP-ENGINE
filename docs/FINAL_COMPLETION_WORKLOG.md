@@ -564,3 +564,71 @@ Tyler actually sets it correctly on a real deployment (no deploy
 access); README/DEVELOPMENT docs should say to set it from the actual
 deployed commit, covered under 2D's documentation pass below if not
 already present.
+
+### 2A -- engine startup supervision (fixed, NOT production-verified)
+
+Confirmed real by tracing `scripts/replit_start.sh`'s deployment-mode
+block: the engine (dependency install, migrations, `uvicorn`) ran as a
+single background subshell (`ENGINE_PID`), while Next.js ran in the
+*foreground* as the last statement of the script. Because `set -e` does
+not apply to a background job's failure, if the engine subshell died for
+any reason -- a migration error, an uncaught startup exception, `uvicorn`
+crashing -- the main script had no way to notice: it just kept running
+the foreground `pnpm run start` indefinitely. The `trap ... EXIT` only
+fires when the *whole script* exits, so it never caught this case either.
+Net effect: a completely dead engine could leave Next.js serving on port
+3000, satisfying Replit's port-based healthcheck and looking "healthy"
+forever, while every page's server-side fetch to the engine silently
+failed from that point on -- exactly the "misleadingly healthy frontend"
+failure mode the directive calls out.
+
+Fix: the frontend (`pnpm run start`) is now also started as a background
+job (`WEB_PID`), and the script blocks on `wait -n` (waits for whichever
+of the two background jobs finishes first -- no PID arguments needed
+since there are only ever these two, so this form works back to bash
+4.3, not just versions supporting `wait -n PID`). Whichever job exits
+first is the failure signal (neither is expected to ever exit on its own
+during a healthy deployment); the script identifies which one via
+`kill -0 "$ENGINE_PID"`, logs which process died and with what exit code,
+kills the other via the (extended) `trap`, and exits with that same
+non-zero code -- so Replit sees the whole script/process exit non-zero
+rather than a partially-alive deployment.
+
+Also: removed a duplicate "starting engine API" log line left over from
+editing (the phase-transition log now fires exactly once, immediately
+before the actual `uvicorn` invocation, right after the "migrations
+complete" moment) and updated the file's own top-of-file summary comment
+to describe the new supervised-background-jobs behavior instead of the
+old foreground-frontend description.
+
+Verification: no Python/frontend code changed, so `pytest`/`mypy`/
+`vitest` are unaffected (guardrails re-run clean, 126 files checked --
+one more than 2B's 125 since this touches a new file type it now walks).
+`bash -n scripts/replit_start.sh` (syntax check) passes. The core
+`wait -n`/`kill -0` logic was exercised standalone in two throwaway
+sandbox scripts simulating each failure order (engine dies first;
+frontend dies first) -- both correctly identified the dead process,
+killed the survivor via the trap, and exited with the dying process's
+real exit code (verified `7` and `3` respectively propagate through).
+
+**This fix is explicitly NOT verified against a real Replit deployment**
+(no deploy access this session, per this document's and CLAUDE.md's own
+repeated constraint) -- `CURRENT_STATE_AUDIT.md`'s "Not verified against
+real infrastructure this session" section now carries the same caveat.
+Two real unknowns that only a live redeploy can answer: whether Replit's
+actual bash version behaves identically for bare `wait -n`, and whether
+Replit's deployment platform actually treats a non-zero script exit as
+"unhealthy"/restart-eligible the way this fix assumes (vs., say, just
+leaving the container stopped with no visible alert). Tyler should
+redeploy with this change and deliberately break something (e.g.
+temporarily point `DATABASE_URL` at an unreachable host) to confirm the
+whole deployment visibly goes down rather than partially surviving.
+
+Remaining limitation: dev/workspace mode (the `else` branch) was left
+unchanged -- the frontend still runs in the foreground there, and an
+engine crash only shows up as an interleaved log line in the same
+terminal Tyler is already watching interactively, which is a reasonable,
+lower-stakes failure mode for an interactive session (killing the whole
+dev server the moment the engine crashes once, mid-iteration, would be
+more disruptive than helpful for local development). Not applying the
+same supervision there was a deliberate scope choice, not an oversight.
