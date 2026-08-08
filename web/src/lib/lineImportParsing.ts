@@ -20,5 +20,7 @@ export function parseLineImportText(text: string): LineImportEntryIn[] {
           underPrice && underPrice.length > 0 ? Number(underPrice) : null,
       };
     })
-    .filter((entry) => entry.player_name.length > 0 && !Number.isNaN(entry.line));
+    .filter(
+      (entry) => entry.player_name.length > 0 && !Number.isNaN(entry.line),
+    );
 }

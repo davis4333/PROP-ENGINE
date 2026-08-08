@@ -17,7 +17,12 @@ describe("parseLineImportText", () => {
   it("treats prices as optional", () => {
     const entries = parseLineImportText("Gerrit Cole, 7.5");
     expect(entries).toEqual([
-      { player_name: "Gerrit Cole", line: 7.5, over_price: null, under_price: null },
+      {
+        player_name: "Gerrit Cole",
+        line: 7.5,
+        over_price: null,
+        under_price: null,
+      },
     ]);
   });
 
@@ -32,21 +37,35 @@ describe("parseLineImportText", () => {
   });
 
   it("skips blank lines", () => {
-    const entries = parseLineImportText("Zack Wheeler, 6.5\n\n\nGerrit Cole, 7.5");
+    const entries = parseLineImportText(
+      "Zack Wheeler, 6.5\n\n\nGerrit Cole, 7.5",
+    );
     expect(entries).toHaveLength(2);
   });
 
   it("drops a row with no player name", () => {
     const entries = parseLineImportText(", 6.5, -110\nGerrit Cole, 7.5");
     expect(entries).toEqual([
-      { player_name: "Gerrit Cole", line: 7.5, over_price: null, under_price: null },
+      {
+        player_name: "Gerrit Cole",
+        line: 7.5,
+        over_price: null,
+        under_price: null,
+      },
     ]);
   });
 
   it("drops a row with a non-numeric line value", () => {
-    const entries = parseLineImportText("Zack Wheeler, not-a-number\nGerrit Cole, 7.5");
+    const entries = parseLineImportText(
+      "Zack Wheeler, not-a-number\nGerrit Cole, 7.5",
+    );
     expect(entries).toEqual([
-      { player_name: "Gerrit Cole", line: 7.5, over_price: null, under_price: null },
+      {
+        player_name: "Gerrit Cole",
+        line: 7.5,
+        over_price: null,
+        under_price: null,
+      },
     ]);
   });
 

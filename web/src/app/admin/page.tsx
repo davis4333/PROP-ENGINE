@@ -14,7 +14,10 @@ import {
   triggerRun,
 } from "@/lib/api";
 import { parseLineImportText } from "@/lib/lineImportParsing";
-import type { AdminStatusResponse, LineImportPreviewResponse } from "@/lib/types";
+import type {
+  AdminStatusResponse,
+  LineImportPreviewResponse,
+} from "@/lib/types";
 
 const SECRET_STORAGE_KEY = "cassandra_admin_secret";
 
@@ -114,7 +117,9 @@ export default function AdminPage() {
       const refreshed = await fetchAdminStatus(secret);
       setStatus(refreshed);
     } catch {
-      setTrackerResetError("Failed to reset the tracker. See engine logs for details.");
+      setTrackerResetError(
+        "Failed to reset the tracker. See engine logs for details.",
+      );
     } finally {
       setTrackerResetPending(false);
     }
@@ -130,7 +135,9 @@ export default function AdminPage() {
       const result = await previewLineImport(slateDateInput, entries, secret);
       setLineImportPreview(result);
     } catch {
-      setLineImportError("Couldn't preview these lines. See engine logs for details.");
+      setLineImportError(
+        "Couldn't preview these lines. See engine logs for details.",
+      );
     } finally {
       setLineImportPending(false);
     }
@@ -152,7 +159,9 @@ export default function AdminPage() {
       );
       setLineImportPreview(null);
     } catch {
-      setLineImportError("Couldn't import these lines. See engine logs for details.");
+      setLineImportError(
+        "Couldn't import these lines. See engine logs for details.",
+      );
     } finally {
       setLineImportPending(false);
     }
@@ -216,25 +225,39 @@ export default function AdminPage() {
                 </span>
                 <div className={styles.activeModelMeta}>
                   <span>family: {status.active_model.model_family}</span>
-                  <span>trained: {new Date(status.active_model.trained_at).toLocaleString()}</span>
                   <span>
-                    activated: {new Date(status.active_model.activated_at).toLocaleString()} by{" "}
-                    {status.active_model.activated_by}
+                    trained:{" "}
+                    {new Date(status.active_model.trained_at).toLocaleString()}
+                  </span>
+                  <span>
+                    activated:{" "}
+                    {new Date(
+                      status.active_model.activated_at,
+                    ).toLocaleString()}{" "}
+                    by {status.active_model.activated_by}
                   </span>
                 </div>
                 <div className={styles.activeModelMeta}>
-                  <span>dataset: {status.active_model.training_dataset_id}</span>
-                  {Object.entries(status.active_model.training_metrics).map(([key, value]) => (
-                    <span key={key}>
-                      {key}: {typeof value === "number" ? value.toFixed(4) : String(value)}
-                    </span>
-                  ))}
+                  <span>
+                    dataset: {status.active_model.training_dataset_id}
+                  </span>
+                  {Object.entries(status.active_model.training_metrics).map(
+                    ([key, value]) => (
+                      <span key={key}>
+                        {key}:{" "}
+                        {typeof value === "number"
+                          ? value.toFixed(4)
+                          : String(value)}
+                      </span>
+                    ),
+                  )}
                 </div>
               </div>
             ) : (
               <p className={styles.empty}>
-                Permanent baseline ({status.model_version}) -- no challenger has been promoted.
-                Promote one with <code>cassandra promote-model</code>.
+                Permanent baseline ({status.model_version}) -- no challenger has
+                been promoted. Promote one with{" "}
+                <code>cassandra promote-model</code>.
               </p>
             )}
           </section>
@@ -242,34 +265,49 @@ export default function AdminPage() {
           {status.pending_model_candidates.length > 0 && (
             <section className={styles.section}>
               <h2 className={styles.sectionTitle}>
-                Pending Model Candidates ({status.pending_model_candidates.length})
+                Pending Model Candidates (
+                {status.pending_model_candidates.length})
               </h2>
               <p className={styles.subtitle}>
-                Awaiting review -- registered by a human via <code>train-final-model --register</code>{" "}
-                or automatically by the retraining scheduler. Nothing here is ever promoted without an
-                explicit <code>cassandra promote-model</code> action.
+                Awaiting review -- registered by a human via{" "}
+                <code>train-final-model --register</code> or automatically by
+                the retraining scheduler. Nothing here is ever promoted without
+                an explicit <code>cassandra promote-model</code> action.
               </p>
               <div className={styles.pendingCandidateList}>
                 {status.pending_model_candidates.map((c) => (
                   <div key={c.artifact_id} className={styles.activeModel}>
                     <span className={styles.activeModelTitle}>
                       {c.fitted_model_version}
-                      <span className={styles.pendingCandidateStatus}>{c.status}</span>
+                      <span className={styles.pendingCandidateStatus}>
+                        {c.status}
+                      </span>
                     </span>
                     <div className={styles.activeModelMeta}>
                       <span>family: {c.model_family}</span>
-                      <span>trained: {new Date(c.trained_at).toLocaleString()}</span>
+                      <span>
+                        trained: {new Date(c.trained_at).toLocaleString()}
+                      </span>
                       <span>registered by: {c.created_by}</span>
                     </div>
                     <div className={styles.activeModelMeta}>
                       <span>dataset: {c.training_dataset_id}</span>
-                      {Object.entries(c.training_metrics).map(([key, value]) => (
-                        <span key={key}>
-                          {key}: {typeof value === "number" ? value.toFixed(4) : String(value)}
-                        </span>
-                      ))}
+                      {Object.entries(c.training_metrics).map(
+                        ([key, value]) => (
+                          <span key={key}>
+                            {key}:{" "}
+                            {typeof value === "number"
+                              ? value.toFixed(4)
+                              : String(value)}
+                          </span>
+                        ),
+                      )}
                     </div>
-                    {c.notes && <div className={styles.pendingCandidateNotes}>{c.notes}</div>}
+                    {c.notes && (
+                      <div className={styles.pendingCandidateNotes}>
+                        {c.notes}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -289,19 +327,27 @@ export default function AdminPage() {
             </p>
             <div className={styles.trackerRow}>
               <div className={styles.trackerStat}>
-                <span className={styles.trackerStatValue}>{status.tracker.wins}</span>
+                <span className={styles.trackerStatValue}>
+                  {status.tracker.wins}
+                </span>
                 <span className={styles.trackerStatLabel}>Wins</span>
               </div>
               <div className={styles.trackerStat}>
-                <span className={styles.trackerStatValue}>{status.tracker.losses}</span>
+                <span className={styles.trackerStatValue}>
+                  {status.tracker.losses}
+                </span>
                 <span className={styles.trackerStatLabel}>Losses</span>
               </div>
               <div className={styles.trackerStat}>
-                <span className={styles.trackerStatValue}>{status.tracker.pushes}</span>
+                <span className={styles.trackerStatValue}>
+                  {status.tracker.pushes}
+                </span>
                 <span className={styles.trackerStatLabel}>Pushes</span>
               </div>
               <div className={styles.trackerStat}>
-                <span className={styles.trackerStatValue}>{status.tracker.voids}</span>
+                <span className={styles.trackerStatValue}>
+                  {status.tracker.voids}
+                </span>
                 <span className={styles.trackerStatLabel}>Voids</span>
               </div>
               <div className={styles.trackerStat}>
@@ -321,7 +367,9 @@ export default function AdminPage() {
             >
               {trackerResetPending ? "Resetting…" : "Reset Tracker to 0-0"}
             </button>
-            {trackerResetError && <p className={styles.error}>{trackerResetError}</p>}
+            {trackerResetError && (
+              <p className={styles.error}>{trackerResetError}</p>
+            )}
           </section>
 
           {status.blocking_issues.length > 0 && (
@@ -386,10 +434,11 @@ export default function AdminPage() {
           <section className={styles.section}>
             <h2 className={styles.sectionTitle}>Manual Line Import</h2>
             <p className={styles.subtitle}>
-              One line per entry: <code>Player Name, line, over_price, under_price</code>
-              {" "}(prices optional). Matched against today&rsquo;s real confirmed
-              starters for the slate date selected above -- nothing is
-              guessed for an unmatched or ambiguous name.
+              One line per entry:{" "}
+              <code>Player Name, line, over_price, under_price</code> (prices
+              optional). Matched against today&rsquo;s real confirmed starters
+              for the slate date selected above -- nothing is guessed for an
+              unmatched or ambiguous name.
             </p>
             <textarea
               value={lineImportText}
@@ -403,7 +452,9 @@ export default function AdminPage() {
               <button
                 type="button"
                 className={styles.button}
-                disabled={!slateDateInput || !lineImportText.trim() || lineImportPending}
+                disabled={
+                  !slateDateInput || !lineImportText.trim() || lineImportPending
+                }
                 onClick={handleLinePreview}
               >
                 Preview
@@ -411,7 +462,9 @@ export default function AdminPage() {
               <button
                 type="button"
                 className={styles.button}
-                disabled={!slateDateInput || !lineImportText.trim() || lineImportPending}
+                disabled={
+                  !slateDateInput || !lineImportText.trim() || lineImportPending
+                }
                 onClick={handleLineImport}
               >
                 Import
@@ -420,12 +473,16 @@ export default function AdminPage() {
             {lineImportMessage && (
               <p className={styles.success}>{lineImportMessage}</p>
             )}
-            {lineImportError && <p className={styles.error}>{lineImportError}</p>}
+            {lineImportError && (
+              <p className={styles.error}>{lineImportError}</p>
+            )}
             {lineImportPreview && (
               <div className={styles.lineImportPreview}>
                 {lineImportPreview.matched.length > 0 && (
                   <div>
-                    <strong>Matched ({lineImportPreview.matched.length})</strong>
+                    <strong>
+                      Matched ({lineImportPreview.matched.length})
+                    </strong>
                     {lineImportPreview.matched.map((m, i) => (
                       <div key={i} className={styles.lineImportRow}>
                         {m.player_name}: {m.line}
@@ -441,7 +498,9 @@ export default function AdminPage() {
                 )}
                 {lineImportPreview.unmatched.length > 0 && (
                   <div>
-                    <strong>Not matched ({lineImportPreview.unmatched.length})</strong>
+                    <strong>
+                      Not matched ({lineImportPreview.unmatched.length})
+                    </strong>
                     {lineImportPreview.unmatched.map((u, i) => (
                       <div key={i} className={styles.lineImportRow}>
                         {u.player_name}: {u.reason}

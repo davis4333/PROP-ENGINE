@@ -79,9 +79,7 @@ def _publish(session, *, game_id: str, player_id: str, record_label: str = "LIVE
 
 
 def _grade(session, *, projection_id: str, result: str, graded_at: datetime) -> Grade:
-    row = Grade(
-        grade_id=uuid.uuid4(), projection_id=projection_id, graded_at=graded_at, result=result
-    )
+    row = Grade(grade_id=uuid.uuid4(), projection_id=projection_id, graded_at=graded_at, result=result)
     session.add(row)
     session.flush()
     return row

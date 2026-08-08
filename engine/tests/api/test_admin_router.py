@@ -411,7 +411,6 @@ def test_admin_status_surfaces_a_registered_but_unpromoted_candidate(client, db_
     assert candidate["created_by"] == "auto-retrain-scheduler"
     assert candidate["training_dataset_id"] == "ds_pending_test"
 
-
     assert candidate["notes"] == "registered automatically"
 
 

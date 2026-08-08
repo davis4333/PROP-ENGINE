@@ -348,9 +348,9 @@ def test_events_http_error_never_leaks_the_api_key_into_a_warning():
     probables = [{"player_mlb_id": 111, "mlb_game_pk": 999888, "full_name": "Andre Pallante"}]
     fake_key_value_for_this_test_only = "test-key"
 
-    result = LinesOddsApiAdapter(
-        api_key=fake_key_value_for_this_test_only, http_client=httpx.Client()
-    ).fetch(slate_date=SLATE_DATE, probables=probables)
+    result = LinesOddsApiAdapter(api_key=fake_key_value_for_this_test_only, http_client=httpx.Client()).fetch(
+        slate_date=SLATE_DATE, probables=probables
+    )
 
     assert result.is_available is False
     assert not any(fake_key_value_for_this_test_only in w for w in result.warnings)

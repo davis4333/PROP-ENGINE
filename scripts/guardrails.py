@@ -66,7 +66,13 @@ RAW_MODEL_NAMES = [
 # Non-"Raw*"-prefixed ORM classes that also map to immutable tables (ledger/
 # audit rows, model artifacts/registry events), needed by the mutation
 # check in addition to RAW_MODEL_NAMES.
-IMMUTABLE_MODEL_CLASS_NAMES = ["Projection", "Grade", "AuditEvent", "ModelArtifact", "ModelRegistryEvent"]
+IMMUTABLE_MODEL_CLASS_NAMES = [
+    "Projection",
+    "Grade",
+    "AuditEvent",
+    "ModelArtifact",
+    "ModelRegistryEvent",
+]
 IMMUTABLE_BLOCK_TOKENS = (
     IMMUTABLE_TABLES + RAW_MODEL_NAMES + IMMUTABLE_MODEL_CLASS_NAMES
 )

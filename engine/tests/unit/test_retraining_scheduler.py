@@ -131,8 +131,10 @@ def test_run_scheduled_retrain_does_not_register_when_challenger_does_not_beat_b
     monkeypatch.setattr(
         "cassandra.historical.walk_forward.run_walk_forward_validation",
         lambda rows, *, dataset_id, n_folds=5: _FakeWalkForwardResult(
-            n_folds=3, n_folds_skipped_insufficient_train_data=0,
-            aggregate_baseline_mae=1.0, aggregate_challenger_mae=1.2,  # worse than baseline
+            n_folds=3,
+            n_folds_skipped_insufficient_train_data=0,
+            aggregate_baseline_mae=1.0,
+            aggregate_challenger_mae=1.2,  # worse than baseline
         ),
     )
     train_calls: list = []
@@ -163,8 +165,10 @@ def test_run_scheduled_retrain_registers_a_candidate_when_challenger_beats_basel
     monkeypatch.setattr(
         "cassandra.historical.walk_forward.run_walk_forward_validation",
         lambda rows, *, dataset_id, n_folds=5: _FakeWalkForwardResult(
-            n_folds=3, n_folds_skipped_insufficient_train_data=0,
-            aggregate_baseline_mae=1.5, aggregate_challenger_mae=1.1,  # beats baseline
+            n_folds=3,
+            n_folds_skipped_insufficient_train_data=0,
+            aggregate_baseline_mae=1.5,
+            aggregate_challenger_mae=1.1,  # beats baseline
         ),
     )
 
@@ -211,14 +215,8 @@ def test_retraining_scheduler_module_never_references_promote_to_active():
     from cassandra.orchestration import retraining_scheduler as rs_module
 
     source = inspect.getsource(rs_module)
-    names = {
-        node.id
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Name)
-    } | {
-        node.attr
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Attribute)
+    names = {node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)} | {
+        node.attr for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Attribute)
     }
     assert "promote_to_active" not in names
     assert "rollback_active" not in names
