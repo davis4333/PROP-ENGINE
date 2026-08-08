@@ -17,10 +17,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError
 
 from cassandra.db.models.identity import Game, Team
-from cassandra.db.models.raw import RawFinalBoxScore, RawLineup, RawProbablePitcher
+from cassandra.db.models.raw import RawFinalBoxScore, RawLineup, RawPitcherGameLog, RawProbablePitcher
 from cassandra.db.models.sources import Source
 from cassandra.features.builders import build_features
+from cassandra.historical.challenger_poisson import COEFFICIENT_NAMES
 from cassandra.pit.snapshot_builder import build_snapshot
+from cassandra.registry.service import create_model_artifact, record_registry_event, resolve_active_model
 
 # 900000000+ range, matching test_historical_backfill.py/test_dataset_builder.py's
 # convention -- 110/111 were real MLB team IDs (Baltimore Orioles/Boston Red
@@ -370,3 +372,122 @@ def test_final_box_score_value_never_appears_in_computed_features(db_session):
 
     assert sentinel not in features.values()
     assert str(sentinel) not in str(features), "the sentinel box-score value leaked into computed features"
+
+
+def _game_log(
+    session, *, source_id, player_mlb_id, stat_date, strikeouts, batters_faced, observed_at, ingested_at
+) -> None:
+    session.add(
+        RawPitcherGameLog(
+            raw_id=uuid.uuid4(),
+            source_id=source_id,
+            player_mlb_id=player_mlb_id,
+            mlb_game_pk=None,
+            stat_date=stat_date,
+            batters_faced=batters_faced,
+            strikeouts=strikeouts,
+            pitch_count=90,
+            innings_pitched=6.0,
+            observed_at=observed_at,
+            ingested_at=ingested_at,
+            payload={},
+        )
+    )
+    session.flush()
+
+
+def test_late_arriving_game_log_invisible_to_a_promoted_non_baseline_model(db_session):
+    """Regression for a gap an independent leakage audit found: every PIT
+    test up to this point only ever exercised the permanent baseline
+    model. registry/service.py's resolve_active_model() can now return a
+    promoted poisson-regression challenger instead (2026-08-08's real
+    promotion) -- this proves the shared pit/asof.py cutoff gate still
+    holds for that path too, not just for run_slate.py's default
+    configuration. A late-arriving game log with a deliberately extreme
+    strikeout total is added *after* the original cutoff; replaying at
+    the SAME cutoff, with a promoted challenger ACTIVE, must produce the
+    exact same prediction both times."""
+    _make_source(db_session, "src-modelswap")
+    _make_game(db_session, game_id="pit-game-modelswap", mlb_game_pk=GAME_PK + 3)
+    player_mlb_id = 7002
+    _probable(
+        db_session,
+        source_id="src-modelswap",
+        mlb_game_pk=GAME_PK + 3,
+        player_mlb_id=player_mlb_id,
+        team_mlb_id=HOME_TEAM_MLB_ID,
+        observed_at=BEFORE,
+        ingested_at=BEFORE,
+    )
+    _game_log(
+        db_session,
+        source_id="src-modelswap",
+        player_mlb_id=player_mlb_id,
+        stat_date=BEFORE,
+        strikeouts=6,
+        batters_faced=24,
+        observed_at=BEFORE,
+        ingested_at=BEFORE,
+    )
+
+    artifact = create_model_artifact(
+        db_session,
+        model_family="poisson-regression",
+        model_code_version="poisson-regression-challenger-0.1.0",
+        coefficients=[0.5, 0.1, 2.0, -0.02, 0.0],
+        coefficient_order=list(COEFFICIENT_NAMES),
+        preprocessing_rules={},
+        training_dataset_id="ds_pit_test",
+        dataset_builder_version="v1",
+        availability_policy_version="v1",
+        feature_set_version="v1",
+        training_seasons=[2023],
+        training_game_types=["R"],
+        training_row_count=500,
+        trained_at=CUTOFF,
+        dependency_versions={},
+        training_metrics={},
+        evaluation_report_ids=[],
+        created_by="pit-test",
+    )
+    record_registry_event(
+        db_session,
+        artifact_id=artifact.artifact_id,
+        event_type="activated",
+        to_status="ACTIVE",
+        operator="pit-test",
+        from_status="CANDIDATE",
+    )
+    resolved = resolve_active_model(db_session)
+    assert resolved.active_artifact_id == artifact.artifact_id  # promotion actually took
+
+    _, entries = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    entry = next(e for e in entries if e.team_mlb_id == HOME_TEAM_MLB_ID)
+    features_before = build_features(entry, CUTOFF)
+    prediction_before = resolved.model.predict(features_before).mean
+
+    # A wildly extreme late-arriving start -- physically written after
+    # the original cutoff. If the leakage gate were ever bypassed on the
+    # promoted-model path, this would visibly blow up recent_k_rate/
+    # expected_bf and shift the prediction.
+    _game_log(
+        db_session,
+        source_id="src-modelswap",
+        player_mlb_id=player_mlb_id,
+        stat_date=AFTER,
+        strikeouts=19,
+        batters_faced=27,
+        observed_at=AFTER,
+        ingested_at=AFTER,
+    )
+
+    _, entries_replayed = build_snapshot(db_session, SLATE_DATE, CUTOFF)
+    entry_replayed = next(e for e in entries_replayed if e.team_mlb_id == HOME_TEAM_MLB_ID)
+    features_replayed = build_features(entry_replayed, CUTOFF)
+    prediction_replayed = resolved.model.predict(features_replayed).mean
+
+    assert features_replayed == features_before, "replaying the same cutoff must reproduce identical features"
+    assert prediction_replayed == prediction_before, (
+        "a promoted non-baseline model must never see a late-arriving stat line "
+        "just because more data has since arrived"
+    )

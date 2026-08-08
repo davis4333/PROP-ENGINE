@@ -39,6 +39,8 @@ class WalkForwardFold:
     validation_end_date: str
     baseline_report: EvaluationReport
     challenger_report: EvaluationReport
+    challenger_converged: bool
+    challenger_n_iterations: int
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,15 @@ class WalkForwardResult:
     folds: list[WalkForwardFold]
     aggregate_baseline_mae: float
     aggregate_challenger_mae: float
+    # Out-of-sample tier breakdown, aggregated across every fold's held-out
+    # validation rows (never a fold's own training rows) -- unlike
+    # historical/evaluation.py's per-model breakdown_by_recent_k_rate_tier,
+    # which a promotion decision must not treat as generalization evidence
+    # when it was measured in-sample (see historical/train_final_model.py's
+    # module docstring). This is the field to check before trusting any
+    # claim that a challenger improves on a specific tier.
+    aggregate_baseline_tier_breakdown: dict[str, dict[str, float]]
+    aggregate_challenger_tier_breakdown: dict[str, dict[str, float]]
 
 
 def _sorted_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -107,9 +118,9 @@ def run_walk_forward_validation(
         if len(train) < MIN_TRAIN_ROWS:
             skipped += 1
             continue
-        challenger_model = fit_poisson_regression(train)
+        challenger_fit = fit_poisson_regression(train)
         baseline_report = evaluate_model(validation, baseline_model, dataset_id=dataset_id)
-        challenger_report = evaluate_model(validation, challenger_model, dataset_id=dataset_id)
+        challenger_report = evaluate_model(validation, challenger_fit.model, dataset_id=dataset_id)
         fold_results.append(
             WalkForwardFold(
                 fold_index=i,
@@ -120,6 +131,8 @@ def run_walk_forward_validation(
                 validation_end_date=max(r["game_date"] for r in validation),
                 baseline_report=baseline_report,
                 challenger_report=challenger_report,
+                challenger_converged=challenger_fit.converged,
+                challenger_n_iterations=challenger_fit.n_iterations,
             )
         )
 
@@ -128,6 +141,22 @@ def run_walk_forward_validation(
         if total_n == 0:
             return 0.0
         return sum(r.mae * r.n_rows for r in reports) / total_n
+
+    def _weighted_tier_breakdown(reports: list[EvaluationReport]) -> dict[str, dict[str, float]]:
+        """Pools every fold's held-out per-tier (n, mae) into one
+        out-of-sample breakdown, weighted by each fold's tier row count --
+        never a fold's training rows, so a tier's apparent improvement here
+        can't be an artifact of a model having been fit on that same data."""
+        totals: dict[str, dict[str, float]] = {}
+        for report in reports:
+            for tier, stats in report.breakdown_by_recent_k_rate_tier.items():
+                bucket = totals.setdefault(tier, {"n": 0.0, "abs_error_sum": 0.0})
+                bucket["n"] += stats["n"]
+                bucket["abs_error_sum"] += stats["mae"] * stats["n"]
+        return {
+            tier: {"n": bucket["n"], "mae": bucket["abs_error_sum"] / bucket["n"] if bucket["n"] else 0.0}
+            for tier, bucket in totals.items()
+        }
 
     return WalkForwardResult(
         walk_forward_module_version=WALK_FORWARD_MODULE_VERSION,
@@ -138,6 +167,10 @@ def run_walk_forward_validation(
         folds=fold_results,
         aggregate_baseline_mae=_weighted_mae([f.baseline_report for f in fold_results]),
         aggregate_challenger_mae=_weighted_mae([f.challenger_report for f in fold_results]),
+        aggregate_baseline_tier_breakdown=_weighted_tier_breakdown([f.baseline_report for f in fold_results]),
+        aggregate_challenger_tier_breakdown=_weighted_tier_breakdown(
+            [f.challenger_report for f in fold_results]
+        ),
     )
 
 

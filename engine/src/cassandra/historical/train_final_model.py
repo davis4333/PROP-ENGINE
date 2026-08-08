@@ -22,6 +22,7 @@ separate session, added during Phase 1B.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,6 +45,8 @@ from cassandra.historical.challenger_poisson import (
 from cassandra.historical.dataset_builder import DatasetManifest
 from cassandra.historical.evaluation import evaluate_model, write_evaluation_report
 from cassandra.registry.service import create_model_artifact, register_as_candidate
+
+logger = logging.getLogger(__name__)
 
 TRAIN_FINAL_MODEL_MODULE_VERSION = "train-final-model-0.2.0"
 
@@ -112,7 +115,20 @@ def train_final_poisson_model(
     is how a human attaches it manually. Omitting it still creates a
     valid CANDIDATE artifact -- it just can't be promoted until a walk-
     forward comparison is attached some other way."""
-    fitted = fit_poisson_regression(rows)
+    fit_result = fit_poisson_regression(rows)
+    if not fit_result.converged:
+        # Not fatal (a caller may still want to inspect/discard this
+        # artifact), but this must never be silently indistinguishable
+        # from a converged fit -- see challenger_poisson.py's docstring.
+        logger.warning(
+            "train_final_poisson_model: IRLS did not converge (dataset_id=%s, rows=%d, "
+            "n_iterations=%d) -- registering anyway, but promote-model reviewers should "
+            "treat this artifact's coefficients as unreliable",
+            manifest.dataset_id,
+            len(rows),
+            fit_result.n_iterations,
+        )
+    fitted = fit_result.model
     report = evaluate_model(rows, fitted, dataset_id=manifest.dataset_id)
     write_evaluation_report(report, output_dir / "evaluations")
 
@@ -129,6 +145,8 @@ def train_final_poisson_model(
         "rmse": report.rmse,
         "mean_bias": report.mean_bias,
         "mean_poisson_deviance": report.mean_poisson_deviance,
+        "irls_converged": fit_result.converged,
+        "irls_n_iterations": fit_result.n_iterations,
     }
     if walk_forward_metrics:
         training_metrics.update(walk_forward_metrics)

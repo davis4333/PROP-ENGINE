@@ -268,6 +268,7 @@ def check_no_box_score_outside_grading(path: Path) -> list[Violation]:
         _in_any_dir(rel, ("features",))
         or _in_any_dir(rel, ("models",))
         or _in_any_dir(rel, ("orchestration",))
+        or _in_any_dir(rel, ("registry",))
         or "/decision/" in f"/{rel}"
     ):
         return []

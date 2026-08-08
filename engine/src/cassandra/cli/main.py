@@ -657,6 +657,18 @@ def train_walk_forward_challenger_cmd(
             f"val_window={fold.validation_start_date}..{fold.validation_end_date}  "
             f"baseline_mae={fold.baseline_report.mae:.4f}  challenger_mae={fold.challenger_report.mae:.4f}"
         )
+    typer.echo(
+        "out-of-sample tier breakdown (held-out validation rows only -- never a fold's own training rows):"
+    )
+    tiers = sorted(
+        set(result.aggregate_baseline_tier_breakdown) | set(result.aggregate_challenger_tier_breakdown)
+    )
+    for tier in tiers:
+        b = result.aggregate_baseline_tier_breakdown.get(tier, {"n": 0, "mae": 0.0})
+        c = result.aggregate_challenger_tier_breakdown.get(tier, {"n": 0, "mae": 0.0})
+        typer.echo(
+            f"  tier={tier}  n={b['n']:.0f}  baseline_mae={b['mae']:.4f}  challenger_mae={c['mae']:.4f}"
+        )
     typer.echo("No automatic promotion -- this is a comparison report only.")
     typer.echo(f"report written: {report_path}")
 

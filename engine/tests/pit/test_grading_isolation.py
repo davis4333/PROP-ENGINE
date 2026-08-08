@@ -16,9 +16,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 import cassandra.features.builders as features_builders
 import cassandra.grading.service as grading_service
+import cassandra.historical.challenger_poisson as historical_challenger_poisson
+import cassandra.historical.dataset_builder as historical_dataset_builder
 import cassandra.models.baseline as models_baseline
+import cassandra.models.poisson_regression as models_poisson_regression
 import cassandra.orchestration.run_slate as orchestration_run_slate
 import cassandra.pit.asof as pit_asof
+import cassandra.registry.service as registry_service
 from cassandra.db.models.raw import RawFinalBoxScore
 from cassandra.db.models.sources import Source
 from cassandra.grading.service import latest_final_box_score
@@ -46,6 +50,38 @@ def test_features_module_never_references_final_box_scores():
 
 def test_baseline_model_module_never_references_final_box_scores():
     assert "RawFinalBoxScore" not in _referenced_names(models_baseline)
+
+
+def test_poisson_regression_model_module_never_references_final_box_scores():
+    """Regression for a gap an independent leakage audit found: this
+    module predates the challenger model actually going live (2026-08-08
+    promotion), so this isolation suite never scanned it -- see
+    registry/service.py's resolve_active_model(), which can now return
+    this model instead of the baseline for a real run_slate() call."""
+    assert "RawFinalBoxScore" not in _referenced_names(models_poisson_regression)
+
+
+def test_registry_service_module_never_references_final_box_scores():
+    """registry/service.py's resolve_active_model() is called directly
+    from orchestration/run_slate.py's PROJECT stage -- genuinely part of
+    the live-serving critical path now that a non-baseline model can be
+    ACTIVE, so it belongs in this isolation suite alongside run_slate.py
+    itself."""
+    assert "RawFinalBoxScore" not in _referenced_names(registry_service)
+
+
+def test_historical_dataset_builder_module_never_references_final_box_scores():
+    """The training dataset builder computes actual_strikeouts labels
+    from historical_pitcher_starts (a separate, already-graded subsystem
+    -- CLAUDE.md non-negotiable #8), never from raw_final_box_scores."""
+    assert "RawFinalBoxScore" not in _referenced_names(historical_dataset_builder)
+
+
+def test_historical_challenger_poisson_module_never_references_final_box_scores():
+    """The IRLS fit only ever sees rows a frozen training dataset already
+    produced -- it has no business touching the live grading table at
+    all."""
+    assert "RawFinalBoxScore" not in _referenced_names(historical_challenger_poisson)
 
 
 def test_grading_service_is_the_only_reader_of_final_box_scores():

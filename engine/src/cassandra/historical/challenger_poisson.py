@@ -20,6 +20,8 @@ pyproject.toml's `training` extra); nothing outside `historical/`
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -32,22 +34,43 @@ from cassandra.models.poisson_regression import (
     design_row,
 )
 
+logger = logging.getLogger(__name__)
+
 RIDGE_LAMBDA = 1.0
 MAX_IRLS_ITERATIONS = 25
 CONVERGENCE_TOL = 1e-8
+
+
+@dataclass(frozen=True)
+class PoissonFitResult:
+    """Wraps the fitted model with what actually happened during IRLS --
+    a caller that only wants the model (walk_forward.py's per-fold
+    fitting) can use `.model` directly; a caller registering a durable
+    artifact (train_final_model.py) should also persist `.converged`/
+    `.n_iterations` so a silently-non-converged fit is visible on the
+    artifact rather than indistinguishable from a converged one (CLAUDE.md:
+    "Error/stale-data behavior is visible... never a silent degradation")."""
+
+    model: PoissonRegressionModel
+    converged: bool
+    n_iterations: int
 
 
 def _design_matrix(rows: list[dict[str, Any]]) -> np.ndarray:
     return np.array([design_row(r) for r in rows], dtype=float)
 
 
-def fit_poisson_regression(rows: list[dict[str, Any]]) -> PoissonRegressionModel:
+def fit_poisson_regression(rows: list[dict[str, Any]]) -> PoissonFitResult:
     """Fits a log-link Poisson GLM (`strikeouts ~ log1p(expected_bf) +
     recent_k_rate + rest_days`) via IRLS with a small ridge penalty (for
     numerical stability on modest per-fold sample sizes, not a tuned
     hyperparameter). Raises ValueError on fewer than 10 rows -- an IRLS
     fit on less data than that isn't a real regression, it's noise, and
     should fail loudly rather than silently return an unstable model.
+    Logs a warning (never raises) if IRLS hits MAX_IRLS_ITERATIONS without
+    converging -- the fitted coefficients are still returned (a caller
+    may reasonably want them for diagnostics), but `.converged=False`
+    makes that visible instead of indistinguishable from a real fit.
     """
     if len(rows) < 10:
         raise ValueError(f"fit_poisson_regression needs at least 10 rows, got {len(rows)}")
@@ -59,7 +82,10 @@ def fit_poisson_regression(rows: list[dict[str, Any]]) -> PoissonRegressionModel
     beta = np.zeros(n_features)
     ridge = RIDGE_LAMBDA * np.eye(n_features)
 
-    for _ in range(MAX_IRLS_ITERATIONS):
+    converged = False
+    n_iterations = 0
+    for iteration in range(MAX_IRLS_ITERATIONS):
+        n_iterations = iteration + 1
         eta = x @ beta
         mu = np.exp(np.clip(eta, -20.0, 20.0))
         mu = np.clip(mu, 1e-6, None)
@@ -69,10 +95,19 @@ def fit_poisson_regression(rows: list[dict[str, Any]]) -> PoissonRegressionModel
         beta_new = np.linalg.solve(xtwx, xtwz)
         if np.max(np.abs(beta_new - beta)) < CONVERGENCE_TOL:
             beta = beta_new
+            converged = True
             break
         beta = beta_new
 
-    return PoissonRegressionModel(coefficients=tuple(float(b) for b in beta))
+    if not converged:
+        logger.warning(
+            "fit_poisson_regression: IRLS did not converge within %d iterations (rows=%d)",
+            MAX_IRLS_ITERATIONS,
+            len(rows),
+        )
+
+    model = PoissonRegressionModel(coefficients=tuple(float(b) for b in beta))
+    return PoissonFitResult(model=model, converged=converged, n_iterations=n_iterations)
 
 
 __all__ = [
@@ -82,6 +117,7 @@ __all__ = [
     "MAX_IRLS_ITERATIONS",
     "POISSON_CHALLENGER_VERSION",
     "RIDGE_LAMBDA",
+    "PoissonFitResult",
     "PoissonRegressionModel",
     "fit_poisson_regression",
 ]

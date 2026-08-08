@@ -649,6 +649,85 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   LIVE loss, confirmed it counted, clicked Reset (with its confirm
   dialog), confirmed the count zeroed and the underlying grade row was
   unchanged.
+- **First real promotion of a non-baseline model to ACTIVE (2026-08-08),
+  and what an independent review found.** A `poisson-regression`
+  challenger, fit on a real 2023-06-through-2026-08 dataset (~18,000
+  rows), was promoted live via `cassandra promote-model` after a 7-fold
+  time-ordered walk-forward comparison beat the permanent baseline in
+  every fold (aggregate MAE 1.899 -> 1.850). This was the first time
+  `resolve_active_model()` genuinely returned something other than the
+  baseline in a live `run_slate()` call, not just in a test. Two
+  independent, adversarial subagent reviews were run against this
+  specific change (never the same turn that made it, per this repo's own
+  convention): a `point-in-time-auditor` pass (PASS -- no leakage risk;
+  verified directly against the training dataset file that the promoted
+  artifact's coefficients could not have been influenced by the day's own
+  game outcomes) and a `model-validator` pass, which found the promotion
+  evidence was weaker than first presented and directly contradicted two
+  claims made about it at the time:
+  - The challenger is **not** better-calibrated than baseline at every
+    threshold -- at the two highest thresholds (7.5, 8.5 strikeouts) it
+    is measurably worse, in the direction real overdispersion in the
+    outcome data predicts (`variance/mean = 1.30` on the full dataset,
+    confirmed empirically). Both the baseline and this challenger share
+    the same `PoissonStrikeoutDistribution` (mean=variance by
+    construction, `models/baseline.py`) -- the challenger only changed
+    how the *mean* is predicted, not the shape of the uncertainty around
+    it. **Not yet fixed**: doing so needs a genuinely different
+    distribution family (negative binomial is the natural next
+    challenger, and ADR 0003's model interface was deliberately built to
+    support one) -- until then, this model's probability estimates at
+    high lines (7.5+) should be treated as less trustworthy than at
+    typical lines.
+  - A dramatic-looking improvement on the "no real recent data" fallback
+    tier (`league_default`, baseline MAE 2.82 -> challenger MAE 1.70) was
+    originally reported from an **in-sample** comparison -- the
+    challenger fit directly on those same rows, against a fixed
+    heuristic that structurally can't adapt to any data at all, which
+    will always look favorable for the fitted model regardless of
+    whether it generalizes. `historical/walk_forward.py`'s
+    `WalkForwardResult` had no per-tier breakdown of its *held-out*
+    folds at all, so there was no genuine out-of-sample evidence for this
+    specific claim at the time it was made. **Fixed same session**:
+    `WalkForwardResult` now aggregates `breakdown_by_recent_k_rate_tier`
+    across every fold's validation rows only
+    (`aggregate_baseline_tier_breakdown`/
+    `aggregate_challenger_tier_breakdown`, surfaced by `cassandra
+    train-walk-forward-challenger`'s output). Re-run against the real
+    dataset, the out-of-sample evidence *confirms* the tier improvement
+    is real, not an in-sample artifact (`league_default`: baseline MAE
+    2.81 -> challenger MAE 1.68, n=235 held-out rows) -- but this was
+    luck of a genuine effect being real, not a reason to trust an
+    in-sample-only claim next time.
+  - IRLS convergence was fit but never checked or recorded --
+    `fit_poisson_regression` now returns a `PoissonFitResult` (`.model`,
+    `.converged`, `.n_iterations`); a non-converged fit logs a warning
+    instead of being silently indistinguishable from a converged one, and
+    `train_final_poisson_model` now stores `irls_converged`/
+    `irls_n_iterations` on every artifact's `training_metrics`.
+  - Two PIT test-coverage gaps the leakage audit found were also closed:
+    `tests/pit/test_grading_isolation.py`'s box-score-isolation AST
+    checks now cover `models/poisson_regression.py`,
+    `registry/service.py`, `historical/dataset_builder.py`, and
+    `historical/challenger_poisson.py` (previously only the baseline
+    model/orchestration modules were scanned); `scripts/guardrails.py`'s
+    `check_no_box_score_outside_grading` now scans `registry/` too. A new
+    PIT regression test
+    (`test_late_arriving_game_log_invisible_to_a_promoted_non_baseline_model`)
+    proves the shared `pit/asof.py` cutoff gate holds when a promoted
+    challenger -- not just the default baseline -- is the ACTIVE model.
+  - **Not done in this pass, left as an open recommendation**: no
+    paired-significance test (e.g. bootstrap) was run on the walk-forward
+    MAE gap; `docs/TRAINING_READINESS_REPORT.md`'s own prior caveat that
+    "one model family, no significance test... a real promotion decision
+    should see more than this" was not resolved before promoting, only
+    reconciled honestly here after the fact. The model was **not**
+    rolled back on the strength of these findings (the registry's
+    promotion gate -- requiring a real out-of-sample comparison before
+    anything can reach ACTIVE -- worked as designed, and the tier claim
+    it was most in doubt over turned out to hold up); the tail-
+    calibration weakness at 7.5+ lines is the one live, currently-
+    unaddressed caveat an operator should keep in mind.
 - **Backfill run status: complete.** The 2023-01-01-to-present backfill
   (`backfill_run_id=backfill_8aae900893d7`) finished with `status=
   completed`, 0 failed games across its entire run, and a small number

@@ -86,3 +86,20 @@ def test_run_walk_forward_validation_produces_comparable_baseline_and_challenger
         assert fold.train_end_date < fold.validation_start_date
     assert result.aggregate_baseline_mae >= 0
     assert result.aggregate_challenger_mae >= 0
+
+
+def test_run_walk_forward_validation_aggregates_tier_breakdown_from_held_out_rows_only():
+    # Every synthetic row is tagged "recent_weighted" -- the aggregated
+    # tier breakdown should report that single tier, with a row count
+    # equal to the sum of every fold's *validation* rows only (never
+    # including any fold's training rows), so this can never be mistaken
+    # for the in-sample breakdown historical/evaluation.py produces.
+    rows = _rows_across_dates(MIN_TRAIN_ROWS * 6, date(2023, 4, 1), seed=7)
+    result = run_walk_forward_validation(rows, dataset_id="ds_test", n_folds=5)
+
+    total_validation_n = sum(fold.validation_n for fold in result.folds)
+
+    for breakdown in (result.aggregate_baseline_tier_breakdown, result.aggregate_challenger_tier_breakdown):
+        assert set(breakdown.keys()) == {"recent_weighted"}
+        assert breakdown["recent_weighted"]["n"] == total_validation_n
+        assert breakdown["recent_weighted"]["mae"] >= 0

@@ -125,6 +125,20 @@ def test_box_score_referenced_in_orchestration_is_blocked():
     assert "no-box-score-in-features-or-models" in checks
 
 
+def test_box_score_referenced_in_registry_is_blocked():
+    # Regression: an independent leakage audit found registry/ wasn't
+    # scanned either -- resolve_active_model() is now called directly
+    # from orchestration/run_slate.py's PROJECT stage, genuinely part of
+    # the live-serving critical path once a non-baseline model can be
+    # ACTIVE.
+    path = _write(
+        "registry/leaky.py",
+        "from cassandra.db.models.raw import RawFinalBoxScore\n\ndef leak():\n    return RawFinalBoxScore\n",
+    )
+    checks = _checks(path)
+    assert "no-box-score-in-features-or-models" in checks
+
+
 def test_bare_skip_marker_is_blocked():
     # checked path must be under a "/tests/" directory for the check to apply
     path = REPO_ROOT / "engine" / "tests" / "unit" / "_guardrail_fixture_bare_skip.py"
