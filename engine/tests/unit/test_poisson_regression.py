@@ -55,6 +55,21 @@ def test_predict_cdf_is_a_valid_distribution():
     assert 0.0 <= result.cdf(3) <= result.cdf(10) <= 1.0
 
 
+def test_predict_raises_loudly_on_nan_input_rather_than_silently_producing_nan():
+    # eta = sum(xi * bi) propagates NaN through the whole dot product;
+    # `math.exp(min(eta, 20.0))` does not clip it away (min()'s NaN-
+    # passthrough gotcha) -- confirm PoissonStrikeoutDistribution's own
+    # guard is what actually catches this at the model's real entry
+    # point, not a silent NaN mean.
+    model = PoissonRegressionModel(coefficients=(0.8, 0.1, 1.0, -0.02, 0.0))
+    try:
+        model.predict({"expected_bf": 22.0, "recent_k_rate": float("nan"), "rest_days": 5})
+        raised = False
+    except ValueError:
+        raised = True
+    assert raised
+
+
 def test_models_poisson_regression_module_never_imports_numpy():
     # The entire point of this module split (see its own docstring): a
     # live pipeline deployment must be able to reconstruct and serve a

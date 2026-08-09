@@ -97,3 +97,33 @@ def test_baseline_model_never_produces_zero_or_negative_mean():
 
 def test_baseline_model_version_is_pinned():
     assert BaselinePoissonModel.model_version == "k-model-0.1.0"
+
+
+def test_poisson_strikeout_distribution_rejects_nan_mean():
+    # Regression for a real numerical-edge-case finding: both
+    # BaselinePoissonModel.predict() and PoissonRegressionModel.predict()
+    # clip their computed mean with a plain min()/max(), but Python's
+    # min()/max() silently pass NaN through unclipped -- so a malformed
+    # feature value could previously reach here and silently produce a
+    # distribution whose cdf() returns NaN, instead of failing loudly.
+    with pytest.raises(ValueError, match="finite"):
+        PoissonStrikeoutDistribution(mean=float("nan"))
+
+
+def test_poisson_strikeout_distribution_rejects_infinite_mean():
+    with pytest.raises(ValueError, match="finite"):
+        PoissonStrikeoutDistribution(mean=float("inf"))
+
+
+def test_poisson_strikeout_distribution_rejects_negative_mean():
+    with pytest.raises(ValueError, match="non-negative"):
+        PoissonStrikeoutDistribution(mean=-1.0)
+
+
+def test_baseline_model_raises_loudly_rather_than_silently_producing_nan():
+    # max()'s NaN-passthrough gotcha means MIN_PROJECTION_MEAN's clip
+    # (`mean = max(mean, MIN_PROJECTION_MEAN)`) does not actually catch a
+    # NaN recent_k_rate -- confirm the distribution constructor's guard
+    # is what actually catches it, at the model's real entry point.
+    with pytest.raises(ValueError, match="finite"):
+        BaselinePoissonModel().predict(_features(expected_bf=22.0, recent_k_rate=float("nan")))

@@ -39,6 +39,27 @@ MIN_PROJECTION_MEAN = 0.05
 class PoissonStrikeoutDistribution:
     mean: float
 
+    def __post_init__(self) -> None:
+        # Both models that construct this (baseline's formula, the
+        # challenger's log-link GLM) each clip their own computed mean
+        # with a plain min()/max() -- but Python's min()/max() silently
+        # pass NaN through unclipped (comparisons against NaN are always
+        # False, a well-known gotcha), so a NaN/inf feature value could
+        # otherwise reach here uncaught and silently produce NaN
+        # probabilities downstream instead of a loud, immediate error.
+        # Found by an explicit numerical-edge-case stress test, not
+        # observed in real pipeline data -- features/builders.py's own
+        # fallbacks (league-average constants) mean this shouldn't be
+        # reachable via any real slate today, but a future feature/model
+        # bug should fail loudly here rather than silently produce a
+        # PoissonStrikeoutDistribution with cdf() returning NaN
+        # (CLAUDE.md: "Error/stale-data behavior is visible... never a
+        # silent degradation").
+        if not math.isfinite(self.mean) or self.mean < 0:
+            raise ValueError(
+                f"PoissonStrikeoutDistribution requires a finite, non-negative mean, got {self.mean!r}"
+            )
+
     @property
     def sd(self) -> float:
         return math.sqrt(self.mean)

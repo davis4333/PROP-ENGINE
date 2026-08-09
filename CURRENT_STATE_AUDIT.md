@@ -716,18 +716,41 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
     (`test_late_arriving_game_log_invisible_to_a_promoted_non_baseline_model`)
     proves the shared `pit/asof.py` cutoff gate holds when a promoted
     challenger -- not just the default baseline -- is the ACTIVE model.
-  - **Not done in this pass, left as an open recommendation**: no
-    paired-significance test (e.g. bootstrap) was run on the walk-forward
-    MAE gap; `docs/TRAINING_READINESS_REPORT.md`'s own prior caveat that
-    "one model family, no significance test... a real promotion decision
-    should see more than this" was not resolved before promoting, only
-    reconciled honestly here after the fact. The model was **not**
-    rolled back on the strength of these findings (the registry's
-    promotion gate -- requiring a real out-of-sample comparison before
-    anything can reach ACTIVE -- worked as designed, and the tier claim
-    it was most in doubt over turned out to hold up); the tail-
-    calibration weakness at 7.5+ lines is the one live, currently-
-    unaddressed caveat an operator should keep in mind.
+  - **Follow-up same night: the paired-significance test was run.**
+    `docs/TRAINING_READINESS_REPORT.md`'s prior caveat -- "one model
+    family, no significance test... a real promotion decision should see
+    more than this" -- was not resolved before promoting, only
+    reconciled honestly above after the fact; it has since been directly
+    closed. A paired bootstrap (5,000 resamples) over every held-out
+    validation row's `|baseline_error| - |challenger_error|`, pooled
+    across all 7 expanding-window folds (15,785 paired rows, ad hoc
+    script reusing `historical/walk_forward.py`'s own fold-building and
+    `historical/challenger_poisson.py`'s fit, not yet a permanent test):
+    95% CI for the mean error reduction is `[0.0375, 0.0620]` strikeouts,
+    comfortably excluding zero. The improvement is real, not noise. The
+    tail-calibration weakness at 7.5+ lines (both models share the same
+    mean=variance Poisson assumption despite `variance/mean = 1.30` in
+    the real outcome data) is still the one live, unaddressed caveat --
+    fixing it needs an actual different distribution family (negative
+    binomial), not a significance test.
+  - **Same follow-up: a numerical edge-case fuzz test found a real gap,
+    now fixed.** Feeding `NaN`/`Infinity` feature values (11 extreme/
+    malformed cases x both models) found that both `BaselinePoissonModel`
+    and `PoissonRegressionModel` clip their computed mean with a plain
+    Python `min()`/`max()` -- which silently passes `NaN` through
+    unclipped (comparisons against `NaN` are always `False`, a classic
+    Python gotcha) -- so a `NaN`/`Infinity` input could previously reach
+    `PoissonStrikeoutDistribution` uncaught and silently produce `NaN`
+    probabilities downstream instead of a loud, immediate error.
+    **Fixed**: `PoissonStrikeoutDistribution.__post_init__`
+    (`models/baseline.py`) now rejects a non-finite or negative `mean`
+    with a `ValueError` at construction -- the one shared chokepoint both
+    models funnel through, so one fix covers both. Not observed as a live
+    bug (`features/builders.py`'s own league-average fallbacks mean this
+    shouldn't be reachable via any real slate today), but a real
+    defensive-programming gap the fuzz test surfaced; regression tests
+    added directly against the distribution class and at each model's
+    `predict()` entry point.
 - **Backfill run status: complete.** The 2023-01-01-to-present backfill
   (`backfill_run_id=backfill_8aae900893d7`) finished with `status=
   completed`, 0 failed games across its entire run, and a small number
