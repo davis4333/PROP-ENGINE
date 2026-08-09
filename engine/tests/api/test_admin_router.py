@@ -18,15 +18,19 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cassandra.api import deps
 from cassandra.api.routers import admin as admin_router
-from cassandra.config import settings
+from cassandra.config import operating_tz, settings
 from cassandra.db.models.grading import Grade
+from cassandra.db.models.historical import HistoricalPitcherStart
 from cassandra.db.models.identity import Game, Player
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
 from cassandra.db.models.raw import RawProbablePitcher
 from cassandra.db.models.sources import Source, SourceHealth
+from cassandra.decision.engine import decide
+from cassandra.ledger.service import publish_projection
+from cassandra.models.baseline import PoissonStrikeoutDistribution
 from cassandra.registry.service import create_model_artifact, promote_to_active, register_as_candidate
 
-from ._helpers import publish
+from ._helpers import make_game, make_player, make_snapshot, publish
 
 AUTH = {"X-Admin-Secret": settings.admin_shared_secret}
 
@@ -64,6 +68,102 @@ def test_admin_status_with_correct_secret_returns_versions_and_empty_state(clien
     assert body["recent_runs"] == []
     assert body["git_commit_sha"] == "deadbeef1234"
     assert body["blocking_issues"] == []
+    assert body["today_games_count"] == 0
+    assert body["today_qualified_count"] == 0
+    assert body["today_no_play_count"] == 0
+    assert body["historical_training_rows"] == 0
+
+
+def test_admin_status_today_snapshot_reflects_real_todays_projections(client, db_session):
+    # Real system-snapshot counts (the same games_for_slate_date /
+    # current_projections_for_slate GET /api/today itself uses) -- a
+    # QUALIFIED pick and a REJECTED no-play, both scheduled at noon in the
+    # operating timezone TODAY, must both be counted correctly and
+    # distinctly (games_count includes both, qualified_count only the
+    # first, no_play_count only the second).
+    today_local_noon = datetime.combine(
+        datetime.now(operating_tz()).date(), time(12, 0), tzinfo=operating_tz()
+    ).astimezone(UTC)
+
+    snapshot = make_snapshot(db_session)
+    qualified_game = make_game(
+        db_session, game_id="admin-snapshot-qualified-game", scheduled_start_utc=today_local_noon
+    )
+    make_player(db_session, player_id="admin-snapshot-qualified-player")
+    qualified_decision = decide(3.5, PoissonStrikeoutDistribution(mean=9.0), [])
+    publish_projection(
+        db_session,
+        run_id="run-admin-snapshot-test",
+        snapshot=snapshot,
+        game=qualified_game,
+        player_id="admin-snapshot-qualified-player",
+        line=3.5,
+        feature_set_version="k-features-0.1.0",
+        features={},
+        model_version="k-model-0.1.0",
+        decision=qualified_decision,
+        as_of=today_local_noon,
+    )
+
+    no_play_game = make_game(
+        db_session, game_id="admin-snapshot-noplay-game", scheduled_start_utc=today_local_noon
+    )
+    make_player(db_session, player_id="admin-snapshot-noplay-player")
+    no_play_decision = decide(None, PoissonStrikeoutDistribution(mean=6.0), [])
+    publish_projection(
+        db_session,
+        run_id="run-admin-snapshot-test",
+        snapshot=snapshot,
+        game=no_play_game,
+        player_id="admin-snapshot-noplay-player",
+        line=None,
+        feature_set_version="k-features-0.1.0",
+        features={},
+        model_version="k-model-0.1.0",
+        decision=no_play_decision,
+        as_of=today_local_noon,
+    )
+    db_session.flush()
+
+    response = client.get("/api/admin/status", headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["today_slate_date"] == datetime.now(operating_tz()).date().isoformat()
+    assert body["today_games_count"] == 2
+    assert body["today_qualified_count"] == 1
+    assert body["today_no_play_count"] == 1
+
+
+def test_admin_status_historical_training_rows_is_a_real_count(client, db_session):
+    db_session.execute(
+        pg_insert(Source)
+        .values(
+            source_id="test-admin-historical-source",
+            name="test-admin-historical-source",
+            kind="pitcher_stats",
+        )
+        .on_conflict_do_nothing(index_elements=[Source.source_id])
+    )
+    for i in range(3):
+        db_session.add(
+            HistoricalPitcherStart(
+                mlb_game_pk=900_000 + i,
+                game_date=datetime(2023, 6, 15).date(),
+                player_mlb_id=800_000 + i,
+                is_starter=True,
+                game_status="Final",
+                source_id="test-admin-historical-source",
+                observed_at=datetime.now(UTC),
+                payload={},
+            )
+        )
+    db_session.flush()
+
+    response = client.get("/api/admin/status", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["historical_training_rows"] == 3
 
 
 def test_admin_status_warns_when_git_commit_sha_is_unavailable(client, monkeypatch):

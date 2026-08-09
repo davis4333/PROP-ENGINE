@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from datetime import date as date_type
 
 from fastapi import APIRouter, Body, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from cassandra.api.deps import get_db, require_admin
@@ -36,7 +36,8 @@ from cassandra.api.schemas import (
     TrackerSummaryOut,
     UnmatchedLineImportEntryOut,
 )
-from cassandra.config import get_git_commit_sha, settings
+from cassandra.config import get_git_commit_sha, operating_tz, settings
+from cassandra.db.models.historical import HistoricalPitcherStart
 from cassandra.db.models.pipeline import PipelineRun, PipelineRunStage
 from cassandra.db.models.registry import ModelArtifact, ModelRegistryEvent
 from cassandra.db.models.sources import SourceHealth
@@ -44,7 +45,9 @@ from cassandra.decision.engine import DECISION_POLICY_VERSION
 from cassandra.features.builders import FEATURE_SET_VERSION
 from cassandra.grading.tracker import reset_tracker, tracker_summary
 from cassandra.ingestion.manual_line_import import LineImportEntry, commit_line_import, preview_line_import
+from cassandra.ledger.service import current_projections_for_slate
 from cassandra.orchestration.run_slate import grade_slate_run, run_slate
+from cassandra.pit.snapshot_builder import games_for_slate_date
 from cassandra.registry.service import current_status, pending_candidates, resolve_active_model
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -180,6 +183,8 @@ def get_admin_status(db: Session = Depends(get_db)) -> AdminStatusResponse:
             "variable at deploy time (no .git directory to introspect on Replit)"
         )
 
+    today_slate_date, today_games_count, today_qualified_count, today_no_play_count = _today_summary(db)
+
     return AdminStatusResponse(
         sources=source_outs,
         recent_runs=run_outs,
@@ -198,7 +203,37 @@ def get_admin_status(db: Session = Depends(get_db)) -> AdminStatusResponse:
         pending_model_candidates=pending_candidate_outs,
         tracker=_tracker_out(db),
         blocking_issues=blocking_issues,
+        today_slate_date=today_slate_date,
+        today_games_count=today_games_count,
+        today_qualified_count=today_qualified_count,
+        today_no_play_count=today_no_play_count,
+        historical_training_rows=_historical_training_rows(db),
+        auto_scheduler_enabled=settings.auto_scheduler_enabled,
+        auto_run_hours_local=settings.auto_run_hours_local,
+        auto_retrain_enabled=settings.auto_retrain_enabled,
     )
+
+
+def _today_summary(db: Session) -> tuple[date_type, int, int, int]:
+    """Real counts for "today" (ADR 0009 operating tz) so the Admin
+    system-snapshot strip can show what's actually on the slate right now
+    -- the exact same games_for_slate_date/current_projections_for_slate
+    calls GET /api/today itself uses, never a separate/divergent query."""
+    resolved_date = datetime.now(operating_tz()).date()
+    games = games_for_slate_date(db, resolved_date)
+    projections = current_projections_for_slate(db, [g.game_id for g in games])
+    qualified = sum(1 for p in projections if p.decision_status == "QUALIFIED")
+    no_play = sum(1 for p in projections if p.decision == "NO_PLAY")
+    return resolved_date, len(games), qualified, no_play
+
+
+def _historical_training_rows(db: Session) -> int:
+    """A real row count from the historical backfill subsystem (see
+    HISTORICAL_BACKFILL_DESIGN.md) -- purely informational visibility for
+    "how much history has Cassandra learned from," never fed into the
+    live pipeline itself (CLAUDE.md non-negotiable #8 governs reading
+    this data as a *decision input*, not counting it for display)."""
+    return db.execute(select(func.count()).select_from(HistoricalPitcherStart)).scalar_one()
 
 
 def _tracker_out(db: Session) -> TrackerSummaryOut:

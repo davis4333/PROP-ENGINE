@@ -191,6 +191,23 @@ class AdminStatusResponse(BaseModel):
     pending_model_candidates: list[PendingModelCandidateOut]
     tracker: TrackerSummaryOut
     blocking_issues: list[str]
+    # System-snapshot strip: real counts for "today" (ADR 0009 operating
+    # tz), computed via the exact same query GET /api/today uses -- never
+    # a separate/divergent number. See admin.py's _today_summary().
+    today_slate_date: date
+    today_games_count: int
+    today_qualified_count: int
+    today_no_play_count: int
+    # A real row count from the historical backfill subsystem -- purely
+    # informational (never fed into the live pipeline itself; see
+    # admin.py's _historical_training_rows()).
+    historical_training_rows: int
+    # Real scheduler configuration (config.py's settings) -- what Cassandra
+    # will actually do next, not a guess. auto_run_hours_local is the raw
+    # configured string (e.g. "7,12,16"); the Admin UI formats it.
+    auto_scheduler_enabled: bool
+    auto_run_hours_local: str
+    auto_retrain_enabled: bool
 
 
 class RunActionResponse(BaseModel):

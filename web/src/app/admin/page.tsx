@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import styles from "./page.module.css";
 import { PipelineStageTracker } from "@/components/PipelineStageTracker";
 import { SourceHealthTile } from "@/components/SourceHealthTile";
+import { SystemSnapshot } from "@/components/SystemSnapshot";
 import {
   ApiError,
   fetchAdminStatus,
@@ -205,6 +206,8 @@ export default function AdminPage() {
 
       {status && (
         <>
+          <SystemSnapshot status={status} />
+
           <section className={styles.section}>
             <h2 className={styles.sectionTitle}>Versions</h2>
             <div className={styles.versions}>

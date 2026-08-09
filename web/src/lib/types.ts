@@ -135,6 +135,14 @@ export interface AdminStatusResponse {
   pending_model_candidates: PendingModelCandidateOut[];
   tracker: TrackerSummaryOut;
   blocking_issues: string[];
+  today_slate_date: string;
+  today_games_count: number;
+  today_qualified_count: number;
+  today_no_play_count: number;
+  historical_training_rows: number;
+  auto_scheduler_enabled: boolean;
+  auto_run_hours_local: string;
+  auto_retrain_enabled: boolean;
 }
 
 export interface RunActionResponse {
