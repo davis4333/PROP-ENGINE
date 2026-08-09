@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 
 from cassandra.historical.dataset_builder import DatasetManifest
 from cassandra.orchestration import retraining_scheduler as rs
+from cassandra.registry.service import ResolvedModel
 
 
 def test_should_trigger_retrain_true_when_never_attempted():
@@ -82,12 +83,29 @@ class _FakeWalkForwardResult:
     n_folds_skipped_insufficient_train_data: int
     aggregate_baseline_mae: float
     aggregate_challenger_mae: float
+    active_model_version: str | None = None
+    aggregate_active_mae: float | None = None
 
 
-def _patch_common(monkeypatch, *, backfill_calls, attempts):
+def _patch_common(
+    monkeypatch, *, backfill_calls, attempts, active_model_version=None, active_artifact_id=None
+):
     monkeypatch.setattr(rs, "session_scope", _fake_session_scope)
     monkeypatch.setattr(rs, "run_backfill", lambda session, client, config: backfill_calls.append(config))
     monkeypatch.setattr(rs, "_record_attempt", lambda session, payload: attempts.append(payload))
+    # Default: nothing has ever been promoted (the common bootstrapping
+    # case) -- individual tests override active_artifact_id/
+    # active_model_version to exercise the "compared against the
+    # currently ACTIVE model too" path.
+    monkeypatch.setattr(
+        rs,
+        "resolve_active_model",
+        lambda session: ResolvedModel(
+            model=object(),  # unused here -- run_walk_forward_validation itself is mocked below
+            model_version=active_model_version or "k-model-0.1.0",
+            active_artifact_id=active_artifact_id,
+        ),
+    )
 
 
 def test_run_scheduled_retrain_skips_when_dataset_has_too_few_rows(monkeypatch, tmp_path):
@@ -130,7 +148,7 @@ def test_run_scheduled_retrain_does_not_register_when_challenger_does_not_beat_b
     )
     monkeypatch.setattr(
         "cassandra.historical.walk_forward.run_walk_forward_validation",
-        lambda rows, *, dataset_id, n_folds=5: _FakeWalkForwardResult(
+        lambda rows, *, dataset_id, **_: _FakeWalkForwardResult(
             n_folds=3,
             n_folds_skipped_insufficient_train_data=0,
             aggregate_baseline_mae=1.0,
@@ -164,7 +182,7 @@ def test_run_scheduled_retrain_registers_a_candidate_when_challenger_beats_basel
     )
     monkeypatch.setattr(
         "cassandra.historical.walk_forward.run_walk_forward_validation",
-        lambda rows, *, dataset_id, n_folds=5: _FakeWalkForwardResult(
+        lambda rows, *, dataset_id, **_: _FakeWalkForwardResult(
             n_folds=3,
             n_folds_skipped_insufficient_train_data=0,
             aggregate_baseline_mae=1.5,
@@ -196,10 +214,157 @@ def test_run_scheduled_retrain_registers_a_candidate_when_challenger_beats_basel
         "walk_forward_aggregate_challenger_mae": 1.1,
         "walk_forward_n_folds": 3,
         "walk_forward_dataset_id": "ds_better",
+        "walk_forward_active_model_version": None,
+        "walk_forward_aggregate_active_mae": None,
+        "walk_forward_beats_active_model": None,
     }
     assert len(attempts) == 1
     assert attempts[0]["outcome"] == "candidate_registered"
     assert attempts[0]["artifact_id"] == "artifact_fake123"
+    # No active model was ever promoted in this test -- beats_active_model
+    # must be None (unknown/not-applicable), never a false True or False.
+    assert attempts[0]["beats_active_model"] is None
+
+
+def test_run_scheduled_retrain_compares_against_the_current_active_model_when_one_exists(
+    monkeypatch, tmp_path
+):
+    # Regression for a real gap: previously a candidate was only ever
+    # compared to the permanent baseline, never to whatever Cassandra is
+    # CURRENTLY serving live predictions with -- the actual question a
+    # promotion decision needs answered. This proves resolve_active_model()
+    # is consulted and its result (a real ACTIVE artifact) is threaded
+    # into the walk-forward comparison and the registered artifact's
+    # training_metrics.
+    backfill_calls: list = []
+    attempts: list[dict] = []
+    _patch_common(
+        monkeypatch,
+        backfill_calls=backfill_calls,
+        attempts=attempts,
+        active_model_version="poisson-regression-challenger-0.1.0+artifact_currently_live",
+        active_artifact_id="artifact_currently_live",
+    )
+
+    data_path = _write_gzip_rows(tmp_path, [{"x": i} for i in range(250)])
+    manifest = _manifest("ds_vs_active", data_path, row_count=250)
+    monkeypatch.setattr(
+        "cassandra.historical.dataset_builder.build_training_dataset",
+        lambda session, *, seasons, output_dir: manifest,
+    )
+
+    wf_calls: list = []
+
+    def fake_wf(rows, *, dataset_id, n_folds=5, active_model=None, active_model_version=None):
+        wf_calls.append({"active_model": active_model, "active_model_version": active_model_version})
+        return _FakeWalkForwardResult(
+            n_folds=3,
+            n_folds_skipped_insufficient_train_data=0,
+            aggregate_baseline_mae=1.5,
+            aggregate_challenger_mae=1.1,  # beats baseline
+            active_model_version=active_model_version,
+            aggregate_active_mae=1.3,  # challenger (1.1) also beats this
+        )
+
+    monkeypatch.setattr("cassandra.historical.walk_forward.run_walk_forward_validation", fake_wf)
+
+    @dataclass(frozen=True)
+    class _FakeTrainResult:
+        artifact_id: str = "artifact_fake456"
+        fitted_model_version: str = "poisson-regression-challenger-0.1.0+artifact_fake456"
+
+    train_calls: list = []
+
+    def fake_train(**kwargs):
+        train_calls.append(kwargs)
+        return _FakeTrainResult()
+
+    monkeypatch.setattr("cassandra.historical.train_final_model.train_final_poisson_model", fake_train)
+
+    rs.run_scheduled_retrain(datetime(2026, 8, 5, tzinfo=UTC), client=object())
+
+    # resolve_active_model()'s result genuinely reached
+    # run_walk_forward_validation() as a real model + version, not
+    # silently dropped.
+    assert len(wf_calls) == 1
+    assert wf_calls[0]["active_model_version"] == (
+        "poisson-regression-challenger-0.1.0+artifact_currently_live"
+    )
+    assert wf_calls[0]["active_model"] is not None
+
+    assert len(train_calls) == 1
+    metrics = train_calls[0]["walk_forward_metrics"]
+    assert metrics["walk_forward_active_model_version"] == (
+        "poisson-regression-challenger-0.1.0+artifact_currently_live"
+    )
+    assert metrics["walk_forward_aggregate_active_mae"] == 1.3
+    assert metrics["walk_forward_beats_active_model"] is True
+
+    assert attempts[0]["beats_active_model"] is True
+    assert attempts[0]["walk_forward_aggregate_active_mae"] == 1.3
+    # The human reviewing this candidate must see the active-model
+    # comparison in plain language, not just buried in a metrics dict.
+    assert "ACTIVE model" in train_calls[0]["notes"]
+    assert "beats" in train_calls[0]["notes"]
+
+
+def test_run_scheduled_retrain_still_registers_when_it_beats_baseline_but_not_the_active_model(
+    monkeypatch, tmp_path
+):
+    # The registration bar stays "beats the naive baseline" (deliberately
+    # loose, unchanged) -- but a candidate that loses to the active model
+    # must still be registered (a human should see it and decide, not
+    # have it silently hidden), with that fact clearly visible rather
+    # than papered over.
+    backfill_calls: list = []
+    attempts: list[dict] = []
+    _patch_common(
+        monkeypatch,
+        backfill_calls=backfill_calls,
+        attempts=attempts,
+        active_model_version="poisson-regression-challenger-0.1.0+artifact_currently_live",
+        active_artifact_id="artifact_currently_live",
+    )
+
+    data_path = _write_gzip_rows(tmp_path, [{"x": i} for i in range(250)])
+    manifest = _manifest("ds_loses_to_active", data_path, row_count=250)
+    monkeypatch.setattr(
+        "cassandra.historical.dataset_builder.build_training_dataset",
+        lambda session, *, seasons, output_dir: manifest,
+    )
+    monkeypatch.setattr(
+        "cassandra.historical.walk_forward.run_walk_forward_validation",
+        lambda rows, *, dataset_id, n_folds=5, active_model=None, active_model_version=None: (
+            _FakeWalkForwardResult(
+                n_folds=3,
+                n_folds_skipped_insufficient_train_data=0,
+                aggregate_baseline_mae=1.5,
+                aggregate_challenger_mae=1.1,  # beats baseline (1.5)...
+                active_model_version=active_model_version,
+                aggregate_active_mae=0.9,  # ...but loses to the active model (0.9)
+            )
+        ),
+    )
+
+    @dataclass(frozen=True)
+    class _FakeTrainResult:
+        artifact_id: str = "artifact_fake789"
+        fitted_model_version: str = "poisson-regression-challenger-0.1.0+artifact_fake789"
+
+    train_calls: list = []
+    monkeypatch.setattr(
+        "cassandra.historical.train_final_model.train_final_poisson_model",
+        lambda **kwargs: (train_calls.append(kwargs), _FakeTrainResult())[1],
+    )
+
+    rs.run_scheduled_retrain(datetime(2026, 8, 5, tzinfo=UTC), client=object())
+
+    # Still registered -- beating baseline remains the registration bar.
+    assert len(train_calls) == 1
+    assert train_calls[0]["walk_forward_metrics"]["walk_forward_beats_active_model"] is False
+    assert "does NOT beat" in train_calls[0]["notes"]
+    assert attempts[0]["outcome"] == "candidate_registered"
+    assert attempts[0]["beats_active_model"] is False
 
 
 def test_retraining_scheduler_module_never_references_promote_to_active():

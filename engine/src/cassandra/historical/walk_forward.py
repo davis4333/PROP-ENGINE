@@ -27,6 +27,7 @@ from cassandra.historical.challenger_poisson import (
 )
 from cassandra.historical.evaluation import EvaluationReport, evaluate_model
 from cassandra.models.baseline import BaselinePoissonModel
+from cassandra.models.interface import StrikeoutModel
 
 WALK_FORWARD_MODULE_VERSION = "historical-walk-forward-0.2.0"
 
@@ -56,6 +57,14 @@ class WalkForwardFold:
     challenger_report: EvaluationReport
     challenger_converged: bool
     challenger_n_iterations: int
+    # None whenever no active_model was passed to run_walk_forward_
+    # validation (the common bootstrapping case: nothing has ever been
+    # promoted yet, so there is no "current active model" to compare
+    # against). When present, this is the SAME fixed, already-fitted
+    # active_model object evaluated fresh on this fold's held-out
+    # validation rows -- never refit per fold (unlike the challenger),
+    # since it's a frozen artifact, not something being trained here.
+    active_report: EvaluationReport | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +86,15 @@ class WalkForwardResult:
     # claim that a challenger improves on a specific tier.
     aggregate_baseline_tier_breakdown: dict[str, dict[str, float]]
     aggregate_challenger_tier_breakdown: dict[str, dict[str, float]]
+    # The other half of the real question a promotion decision needs
+    # answered -- not just "does this beat the naive permanent baseline"
+    # but "is this actually better than what Cassandra is using right
+    # now." None whenever no active_model was supplied (nothing promoted
+    # yet); the permanent-baseline comparison above is unconditional and
+    # always present, since it's a useful safety reference regardless of
+    # whether anything has ever been promoted.
+    active_model_version: str | None = None
+    aggregate_active_mae: float | None = None
 
 
 def _sorted_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -115,15 +133,29 @@ def build_expanding_folds(
 
 
 def run_walk_forward_validation(
-    rows: list[dict[str, Any]], *, dataset_id: str, n_folds: int = 5, family: str = "poisson-regression"
+    rows: list[dict[str, Any]],
+    *,
+    dataset_id: str,
+    n_folds: int = 5,
+    family: str = "poisson-regression",
+    active_model: StrikeoutModel | None = None,
+    active_model_version: str | None = None,
 ) -> WalkForwardResult:
     """For each expanding-window fold: fits a fresh challenger (from
     `family`, see `_CHALLENGER_FIT_FUNCTIONS`) on that fold's training
-    rows only, then evaluates both the challenger and the permanent,
-    unmodified baseline (`k-model-0.1.0`) against that same fold's
-    validation rows -- so every comparison is apples-to-apples on data
-    neither model has seen. Folds with too few training rows to fit
-    reliably are skipped and counted, never silently dropped."""
+    rows only, then evaluates the challenger, the permanent unmodified
+    baseline (`k-model-0.1.0`), and -- when `active_model` is supplied --
+    whatever Cassandra is CURRENTLY serving live predictions with,
+    against that same fold's validation rows -- so every comparison is
+    apples-to-apples on data neither model has seen. `active_model` is
+    a fixed, already-fitted model (e.g. from `registry.service.
+    resolve_active_model()`); it is evaluated fresh per fold, never
+    refit, since walk-forward re-fitting only makes sense for a
+    challenger still being trained. Pass `active_model=None` (the
+    default) when nothing has ever been promoted -- there is nothing to
+    compare against yet, and the permanent-baseline comparison alone is
+    still meaningful. Folds with too few training rows to fit reliably
+    are skipped and counted, never silently dropped."""
     if family not in _CHALLENGER_FIT_FUNCTIONS:
         raise ValueError(f"unsupported family {family!r} -- supported: {tuple(_CHALLENGER_FIT_FUNCTIONS)}")
     fit_challenger, challenger_model_version = _CHALLENGER_FIT_FUNCTIONS[family]
@@ -140,6 +172,11 @@ def run_walk_forward_validation(
         challenger_fit = fit_challenger(train)
         baseline_report = evaluate_model(validation, baseline_model, dataset_id=dataset_id)
         challenger_report = evaluate_model(validation, challenger_fit.model, dataset_id=dataset_id)
+        active_report = (
+            evaluate_model(validation, active_model, dataset_id=dataset_id)
+            if active_model is not None
+            else None
+        )
         fold_results.append(
             WalkForwardFold(
                 fold_index=i,
@@ -152,6 +189,7 @@ def run_walk_forward_validation(
                 challenger_report=challenger_report,
                 challenger_converged=challenger_fit.converged,
                 challenger_n_iterations=challenger_fit.n_iterations,
+                active_report=active_report,
             )
         )
 
@@ -160,6 +198,9 @@ def run_walk_forward_validation(
         if total_n == 0:
             return 0.0
         return sum(r.mae * r.n_rows for r in reports) / total_n
+
+    active_reports = [f.active_report for f in fold_results if f.active_report is not None]
+    aggregate_active_mae = _weighted_mae(active_reports) if active_model is not None else None
 
     def _weighted_tier_breakdown(reports: list[EvaluationReport]) -> dict[str, dict[str, float]]:
         """Pools every fold's held-out per-tier (n, mae) into one
@@ -190,6 +231,8 @@ def run_walk_forward_validation(
         aggregate_challenger_tier_breakdown=_weighted_tier_breakdown(
             [f.challenger_report for f in fold_results]
         ),
+        active_model_version=active_model_version if active_model is not None else None,
+        aggregate_active_mae=aggregate_active_mae,
     )
 
 

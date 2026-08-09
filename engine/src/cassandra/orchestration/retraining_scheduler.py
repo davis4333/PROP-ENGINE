@@ -1,10 +1,19 @@
 """Periodic, human-gated model retraining -- the "self-learning loop":
 backfills recently-completed games, rebuilds the training dataset, runs a
-time-ordered walk-forward out-of-sample comparison against the current
-baseline, and -- only if the challenger genuinely beats the baseline on
-that held-out comparison -- fits and registers a new CANDIDATE for a
-human to review and promote (or ignore/reject) by hand via `cassandra
-promote-model`/the Admin page.
+time-ordered walk-forward out-of-sample comparison against the permanent
+baseline AND (whenever one exists) the model Cassandra is CURRENTLY
+serving live predictions with, and -- only if the challenger genuinely
+beats the baseline on that held-out comparison -- fits and registers a
+new CANDIDATE for a human to review and promote (or ignore/reject) by
+hand via `cassandra promote-model`/the Admin page. The active-model
+comparison is always computed and surfaced (on the artifact's
+`training_metrics` and in the audit-event payload) whenever something is
+ACTIVE, but registration itself still only requires beating the naive
+baseline -- the same deliberately loose bar as before (see
+MIN_FOLDS_TO_REGISTER's docstring) -- so a human reviewing candidates
+sees "does this beat what's live right now" as real, visible evidence
+rather than the registration gate silently hiding a candidate that beat
+baseline but lost to the active model.
 
 NEVER promotes anything on its own: this module only ever calls
 register_as_candidate() (via train_final_poisson_model(register=True)),
@@ -50,6 +59,7 @@ from cassandra.config import settings
 from cassandra.db.models.audit import AuditEvent
 from cassandra.db.session import engine, session_scope
 from cassandra.historical.backfill import BackfillConfig, run_backfill
+from cassandra.registry.service import resolve_active_model
 
 logger = logging.getLogger(__name__)
 
@@ -180,8 +190,21 @@ def run_scheduled_retrain(now: datetime, client: httpx.Client) -> None:
         for line in fh:
             rows.append(json_module.loads(line))
 
+    with session_scope() as session:
+        resolved_active = resolve_active_model(session)
+    # None whenever nothing has ever been promoted -- the permanent
+    # baseline comparison below is unconditional and still meaningful on
+    # its own in that bootstrapping case.
+    active_model = resolved_active.model if resolved_active.active_artifact_id is not None else None
+    active_model_version = resolved_active.model_version if active_model is not None else None
+
     try:
-        wf_result = run_walk_forward_validation(rows, dataset_id=manifest.dataset_id)
+        wf_result = run_walk_forward_validation(
+            rows,
+            dataset_id=manifest.dataset_id,
+            active_model=active_model,
+            active_model_version=active_model_version,
+        )
     except Exception:
         logger.exception("retraining_scheduler: walk-forward validation failed")
         with session_scope() as session:
@@ -199,6 +222,18 @@ def run_scheduled_retrain(now: datetime, client: httpx.Client) -> None:
         wf_result.n_folds >= MIN_FOLDS_TO_REGISTER
         and wf_result.aggregate_challenger_mae < wf_result.aggregate_baseline_mae
     )
+    # None when nothing has ever been promoted (no active model to
+    # compare against) -- deliberately not folded into the registration
+    # gate below (that stays "beats the naive baseline," the existing,
+    # deliberately loose bar a human still reviews every candidate
+    # against), but always computed and surfaced so a human reviewing a
+    # pending candidate can see immediately whether it would actually be
+    # an upgrade over what Cassandra is using right now, not just an
+    # upgrade over the permanent formula.
+    beats_active_model = (
+        wf_result.aggregate_active_mae is not None
+        and wf_result.aggregate_challenger_mae < wf_result.aggregate_active_mae
+    )
     attempt_payload = {
         "dataset_id": manifest.dataset_id,
         "row_count": manifest.row_count,
@@ -209,6 +244,9 @@ def run_scheduled_retrain(now: datetime, client: httpx.Client) -> None:
         "walk_forward_aggregate_baseline_mae": wf_result.aggregate_baseline_mae,
         "walk_forward_aggregate_challenger_mae": wf_result.aggregate_challenger_mae,
         "beats_baseline": beats_baseline,
+        "active_model_version": active_model_version,
+        "walk_forward_aggregate_active_mae": wf_result.aggregate_active_mae,
+        "beats_active_model": beats_active_model if active_model is not None else None,
     }
 
     if not beats_baseline:
@@ -224,6 +262,15 @@ def run_scheduled_retrain(now: datetime, client: httpx.Client) -> None:
             _record_attempt(session, attempt_payload)
         return
 
+    active_note = (
+        (
+            f" Also {'beats' if beats_active_model else 'does NOT beat'} the current ACTIVE model "
+            f"({active_model_version}, mae={wf_result.aggregate_active_mae:.4f})."
+        )
+        if active_model is not None
+        else " No model is currently ACTIVE (nothing has been promoted yet), so there is nothing to "
+        "compare against beyond the permanent baseline above."
+    )
     try:
         result = train_final_poisson_model(
             manifest=manifest,
@@ -234,14 +281,17 @@ def run_scheduled_retrain(now: datetime, client: httpx.Client) -> None:
             notes=(
                 f"Automatic retraining scheduler: walk-forward challenger MAE "
                 f"{wf_result.aggregate_challenger_mae:.4f} beat baseline "
-                f"{wf_result.aggregate_baseline_mae:.4f} across {wf_result.n_folds} folds. "
-                "Not promoted automatically -- awaiting human review."
+                f"{wf_result.aggregate_baseline_mae:.4f} across {wf_result.n_folds} folds."
+                f"{active_note} Not promoted automatically -- awaiting human review."
             ),
             walk_forward_metrics={
                 "walk_forward_aggregate_baseline_mae": wf_result.aggregate_baseline_mae,
                 "walk_forward_aggregate_challenger_mae": wf_result.aggregate_challenger_mae,
                 "walk_forward_n_folds": wf_result.n_folds,
                 "walk_forward_dataset_id": manifest.dataset_id,
+                "walk_forward_active_model_version": active_model_version,
+                "walk_forward_aggregate_active_mae": wf_result.aggregate_active_mae,
+                "walk_forward_beats_active_model": beats_active_model if active_model is not None else None,
             },
         )
     except Exception:

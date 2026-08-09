@@ -16,6 +16,8 @@ from cassandra.historical.walk_forward import (
     build_expanding_folds,
     run_walk_forward_validation,
 )
+from cassandra.models.baseline import BaselinePoissonModel
+from cassandra.models.poisson_regression import PoissonRegressionModel
 
 
 def _rows_across_dates(n: int, start: date, seed: int = 0) -> list[dict]:
@@ -128,3 +130,67 @@ def test_run_walk_forward_validation_supports_the_negative_binomial_family():
     # model_version above already proves this ran the NB code path).
     for fold in result.folds:
         assert fold.challenger_converged is True
+
+
+def test_run_walk_forward_validation_without_an_active_model_leaves_active_fields_none():
+    # The common bootstrapping case: nothing has ever been promoted.
+    rows = _rows_across_dates(MIN_TRAIN_ROWS * 6, date(2023, 4, 1), seed=7)
+    result = run_walk_forward_validation(rows, dataset_id="ds_test", n_folds=5)
+
+    assert result.active_model_version is None
+    assert result.aggregate_active_mae is None
+    for fold in result.folds:
+        assert fold.active_report is None
+
+
+def test_run_walk_forward_validation_evaluates_a_real_active_model_per_fold():
+    # Regression for a real gap: a candidate must be judged against BOTH
+    # the permanent baseline AND whatever Cassandra is currently serving
+    # live predictions with -- not just the baseline. Uses a real fitted
+    # PoissonRegressionModel as a stand-in "currently active" model
+    # (structurally identical to what registry.service.
+    # resolve_active_model() would hand this function in production) and
+    # confirms it's evaluated -- fresh, never refit -- against every
+    # fold's real held-out validation rows.
+    rows = _rows_across_dates(MIN_TRAIN_ROWS * 6, date(2023, 4, 1), seed=7)
+    active_model = PoissonRegressionModel(coefficients=(0.5, 0.1, 2.0, -0.02, 0.0))
+
+    result = run_walk_forward_validation(
+        rows,
+        dataset_id="ds_test",
+        n_folds=5,
+        active_model=active_model,
+        active_model_version="poisson-regression-challenger-0.1.0+artifact_test_active",
+    )
+
+    assert result.active_model_version == "poisson-regression-challenger-0.1.0+artifact_test_active"
+    assert result.aggregate_active_mae is not None
+    assert result.aggregate_active_mae >= 0
+    for fold in result.folds:
+        assert fold.active_report is not None
+        assert fold.active_report.n_rows == fold.validation_n
+        assert fold.active_report.model_version == active_model.model_version
+
+
+def test_run_walk_forward_validation_active_model_is_not_refit_per_fold():
+    # The active model is a FIXED, already-fitted artifact -- unlike the
+    # challenger, which genuinely refits fresh on each fold's expanding
+    # training window, the same active_model object/coefficients must be
+    # what's evaluated in every fold (re-fitting it would defeat the
+    # entire point: it's not a candidate being trained, it's what's
+    # already live).
+    rows = _rows_across_dates(MIN_TRAIN_ROWS * 6, date(2023, 4, 1), seed=7)
+    active_model = BaselinePoissonModel()
+
+    result = run_walk_forward_validation(
+        rows, dataset_id="ds_test", n_folds=5, active_model=active_model, active_model_version="k-model-0.1.0"
+    )
+
+    for fold in result.folds:
+        assert fold.active_report.model_version == "k-model-0.1.0"
+    # BaselinePoissonModel's predictions are a pure function of features
+    # (no fitted state at all) -- its aggregate MAE across every held-out
+    # fold must be identical whether it's passed as the "active" model
+    # here or evaluated directly as the baseline, proving no fold-
+    # specific refitting/mutation happened to it.
+    assert result.aggregate_active_mae == result.aggregate_baseline_mae

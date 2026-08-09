@@ -616,13 +616,17 @@ def train_walk_forward_challenger_cmd(
 ) -> None:
     """Trains a challenger model under time-ordered walk-forward
     validation against a frozen dataset, comparing it fold by fold to the
-    permanent, unmodified baseline (`k-model-0.1.0`) --
-    historical/walk_forward.py. Requires the `training` extra (numpy);
-    imported lazily here so every other CLI command keeps working
-    unmodified in an environment that hasn't installed it. **No automatic
-    promotion**: this only ever writes a frozen, HISTORICAL_RECONSTRUCTION
-    -labeled comparison report -- promoting a challenger to production
-    requires a human, per the mission directive."""
+    permanent, unmodified baseline (`k-model-0.1.0`) AND, whenever a
+    model is currently ACTIVE, to that exact model too -- the real
+    question a promotion decision needs answered isn't just "does this
+    beat the naive baseline" but "is this actually better than what
+    Cassandra is using right now" -- historical/walk_forward.py.
+    Requires the `training` extra (numpy); imported lazily here so every
+    other CLI command keeps working unmodified in an environment that
+    hasn't installed it. **No automatic promotion**: this only ever
+    writes a frozen, HISTORICAL_RECONSTRUCTION-labeled comparison report
+    -- promoting a challenger to production requires a human, per the
+    mission directive."""
     try:
         from cassandra.historical.walk_forward import result_to_dict, run_walk_forward_validation
     except ImportError as exc:
@@ -642,25 +646,49 @@ def train_walk_forward_challenger_cmd(
         for line in fh:
             rows.append(json_module.loads(line))
 
-    result = run_walk_forward_validation(rows, dataset_id=dataset_id, n_folds=n_folds, family=family)
+    with session_scope() as session:
+        resolved_active = resolve_active_model(session)
+    # None whenever nothing has ever been promoted (the permanent
+    # baseline is "active" in the sense of what's currently serving, but
+    # that's already the unconditional baseline comparison above -- no
+    # point comparing the baseline to itself).
+    active_model = resolved_active.model if resolved_active.active_artifact_id is not None else None
+    active_model_version = resolved_active.model_version if active_model is not None else None
+
+    result = run_walk_forward_validation(
+        rows,
+        dataset_id=dataset_id,
+        n_folds=n_folds,
+        family=family,
+        active_model=active_model,
+        active_model_version=active_model_version,
+    )
 
     eval_dir = Path(output_dir) / "evaluations"
     eval_dir.mkdir(parents=True, exist_ok=True)
     report_path = eval_dir / f"walk_forward_{dataset_id}_{result.challenger_model_version}.json"
     report_path.write_text(json_module.dumps(result_to_dict(result), indent=2))
 
+    active_line = (
+        f"active_model={result.active_model_version}  aggregate_active_mae={result.aggregate_active_mae:.4f}"
+        if result.aggregate_active_mae is not None
+        else "active_model=none (nothing has ever been promoted -- baseline is what's currently serving)"
+    )
     typer.echo(
         f"challenger={result.challenger_model_version}  dataset_id={dataset_id}\n"
         f"folds_run={result.n_folds}  folds_skipped_insufficient_data="
         f"{result.n_folds_skipped_insufficient_train_data}\n"
         f"aggregate_baseline_mae={result.aggregate_baseline_mae:.4f}  "
-        f"aggregate_challenger_mae={result.aggregate_challenger_mae:.4f}"
+        f"aggregate_challenger_mae={result.aggregate_challenger_mae:.4f}\n"
+        f"{active_line}"
     )
     for fold in result.folds:
+        active_mae = f"  active_mae={fold.active_report.mae:.4f}" if fold.active_report is not None else ""
         typer.echo(
             f"  fold={fold.fold_index}  train_n={fold.train_n}  val_n={fold.validation_n}  "
             f"val_window={fold.validation_start_date}..{fold.validation_end_date}  "
             f"baseline_mae={fold.baseline_report.mae:.4f}  challenger_mae={fold.challenger_report.mae:.4f}"
+            f"{active_mae}"
         )
     typer.echo(
         "out-of-sample tier breakdown (held-out validation rows only -- never a fold's own training rows):"
