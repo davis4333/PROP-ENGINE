@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import styles from "./page.module.css";
+import { ModelComparisonCard } from "@/components/ModelComparisonCard";
 import { PipelineStageTracker } from "@/components/PipelineStageTracker";
 import { SourceHealthTile } from "@/components/SourceHealthTile";
 import { SystemSnapshot } from "@/components/SystemSnapshot";
@@ -265,18 +266,22 @@ export default function AdminPage() {
             )}
           </section>
 
-          {status.pending_model_candidates.length > 0 && (
-            <section className={styles.section}>
-              <h2 className={styles.sectionTitle}>
-                Pending Model Candidates (
-                {status.pending_model_candidates.length})
-              </h2>
-              <p className={styles.subtitle}>
-                Awaiting review -- registered by a human via{" "}
-                <code>train-final-model --register</code> or automatically by
-                the retraining scheduler. Nothing here is ever promoted without
-                an explicit <code>cassandra promote-model</code> action.
-              </p>
+          <section className={styles.section}>
+            <h2 className={styles.sectionTitle}>
+              Model Comparison
+              {status.pending_model_candidates.length > 0
+                ? ` -- ${status.pending_model_candidates.length} Pending`
+                : ""}
+            </h2>
+            <p className={styles.subtitle}>
+              Awaiting review -- registered by a human via{" "}
+              <code>train-final-model --register</code> or automatically by the
+              retraining scheduler. Nothing here is ever promoted without an
+              explicit <code>cassandra promote-model</code> action.
+            </p>
+            {status.pending_model_candidates.length === 0 ? (
+              <p className={styles.empty}>NO CHALLENGER CURRENTLY WAITING.</p>
+            ) : (
               <div className={styles.pendingCandidateList}>
                 {status.pending_model_candidates.map((c) => (
                   <div key={c.artifact_id} className={styles.activeModel}>
@@ -292,20 +297,9 @@ export default function AdminPage() {
                         trained: {new Date(c.trained_at).toLocaleString()}
                       </span>
                       <span>registered by: {c.created_by}</span>
-                    </div>
-                    <div className={styles.activeModelMeta}>
                       <span>dataset: {c.training_dataset_id}</span>
-                      {Object.entries(c.training_metrics).map(
-                        ([key, value]) => (
-                          <span key={key}>
-                            {key}:{" "}
-                            {typeof value === "number"
-                              ? value.toFixed(4)
-                              : String(value)}
-                          </span>
-                        ),
-                      )}
                     </div>
+                    <ModelComparisonCard trainingMetrics={c.training_metrics} />
                     {c.notes && (
                       <div className={styles.pendingCandidateNotes}>
                         {c.notes}
@@ -314,8 +308,8 @@ export default function AdminPage() {
                   </div>
                 ))}
               </div>
-            </section>
-          )}
+            )}
+          </section>
 
           <section className={styles.section}>
             <h2 className={styles.sectionTitle}>Performance Tracker</h2>

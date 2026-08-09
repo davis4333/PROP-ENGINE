@@ -1,0 +1,34 @@
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.1rem;
+  font-size: 0.8125rem;
+  margin-top: 0.5rem;
+}
+
+.item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.label {
+  color: #a1a1aa;
+}
+
+.value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.better {
+  color: #86efac;
+}
+
+.worse {
+  color: #fca5a5;
+}
+
+.neutral {
+  color: #a1a1aa;
+}
