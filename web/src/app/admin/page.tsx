@@ -9,6 +9,7 @@ import { SystemSnapshot } from "@/components/SystemSnapshot";
 import {
   ApiError,
   fetchAdminStatus,
+  fetchHealth,
   importLines,
   previewLineImport,
   resetTracker,
@@ -25,6 +26,10 @@ const SECRET_STORAGE_KEY = "cassandra_admin_secret";
 
 export default function AdminPage() {
   const [secret, setSecret] = useState<string | null>(null);
+  // While true, the gate form is never shown -- avoids flashing a
+  // password prompt for a private/dev instance that's about to
+  // auto-bypass it (see the health-check effect below).
+  const [checkingAuthRequirement, setCheckingAuthRequirement] = useState(true);
   const [secretInput, setSecretInput] = useState("");
   const [status, setStatus] = useState<AdminStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -50,11 +55,29 @@ export default function AdminPage() {
 
   useEffect(() => {
     const stored = sessionStorage.getItem(SECRET_STORAGE_KEY);
-    if (stored) setSecret(stored);
+    if (stored) {
+      setSecret(stored);
+      setCheckingAuthRequirement(false);
+      return;
+    }
+    // No cached secret -- ask the engine whether this instance is even
+    // enforcing ADR 0011's gate right now (deps.py's require_admin()
+    // bypasses it entirely outside a real deployment, per the owner's
+    // explicit dev-mode request). Never blocks the gate from eventually
+    // showing: any failure here just falls through to the normal
+    // password prompt, same as before this existed.
+    fetchHealth()
+      .then((health) => {
+        if (!health.admin_auth_required) setSecret("");
+      })
+      .catch(() => {
+        /* engine unreachable -- the normal gate/error flow below handles it */
+      })
+      .finally(() => setCheckingAuthRequirement(false));
   }, []);
 
   useEffect(() => {
-    if (!secret) return;
+    if (secret === null) return;
     setLoading(true);
     setError(null);
     fetchAdminStatus(secret)
@@ -78,7 +101,7 @@ export default function AdminPage() {
   }
 
   async function handleAction(kind: "run" | "grade") {
-    if (!secret || !slateDateInput) return;
+    if (secret === null || !slateDateInput) return;
     setActionPending(true);
     setActionMessage(null);
     setActionError(null);
@@ -104,7 +127,7 @@ export default function AdminPage() {
   }
 
   async function handleResetTracker() {
-    if (!secret) return;
+    if (secret === null) return;
     if (
       !window.confirm(
         "Reset the win/loss tracker to 0-0? This only resets the counter -- the permanent Ledger history is never affected.",
@@ -128,7 +151,7 @@ export default function AdminPage() {
   }
 
   async function handleLinePreview() {
-    if (!secret || !slateDateInput) return;
+    if (secret === null || !slateDateInput) return;
     setLineImportPending(true);
     setLineImportMessage(null);
     setLineImportError(null);
@@ -146,7 +169,7 @@ export default function AdminPage() {
   }
 
   async function handleLineImport() {
-    if (!secret || !slateDateInput) return;
+    if (secret === null || !slateDateInput) return;
     setLineImportPending(true);
     setLineImportMessage(null);
     setLineImportError(null);
@@ -169,7 +192,15 @@ export default function AdminPage() {
     }
   }
 
-  if (!secret) {
+  if (checkingAuthRequirement) {
+    return (
+      <main className={styles.page}>
+        <h1 className={styles.title}>Admin</h1>
+      </main>
+    );
+  }
+
+  if (secret === null) {
     return (
       <main className={styles.page}>
         <h1 className={styles.title}>Admin</h1>

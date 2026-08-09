@@ -87,6 +87,18 @@ export function fetchProjectionHistory(
   );
 }
 
+export interface HealthResponse {
+  status: string;
+  git_commit_sha: string | null;
+  admin_auth_required: boolean;
+}
+
+// Unauthenticated -- lets the Admin page know whether to even show the
+// secret-entry gate before it has (or needs) a secret at all.
+export function fetchHealth(): Promise<HealthResponse> {
+  return getJson(`/health`);
+}
+
 // Client-side (Admin page) -- relative paths, proxied by next.config.ts.
 export function fetchAdminStatus(secret: string): Promise<AdminStatusResponse> {
   return getJson(`/api/admin/status`, { "X-Admin-Secret": secret });

@@ -94,7 +94,7 @@ app.include_router(admin.router)
 
 
 @app.get("/health")
-def health() -> dict[str, str | None]:
+def health() -> dict[str, str | bool | None]:
     # Phase 2B: exposes the deployed commit SHA so an operator (or the
     # Admin page) can confirm which code actually produced a given
     # response -- a None here is a visible gap (see get_git_commit_sha's
@@ -116,4 +116,13 @@ def health() -> dict[str, str | None]:
     # is out of scope here per ADR 0012 (no new frontend surface without
     # the owner's sign-off) -- documented as a known limitation, not
     # silently worked around.
-    return {"status": "ok", "git_commit_sha": get_git_commit_sha()}
+    return {
+        "status": "ok",
+        "git_commit_sha": get_git_commit_sha(),
+        # Lets the Admin page know whether to even show the secret-entry
+        # gate, without needing a secret to find out -- deps.py's
+        # require_admin() bypasses ADR 0011's auth entirely outside a
+        # real deployment; this just makes that bypass visible rather
+        # than the frontend having to guess by probing.
+        "admin_auth_required": is_production_environment(),
+    }

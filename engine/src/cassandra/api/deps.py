@@ -13,7 +13,7 @@ from collections.abc import Generator
 from fastapi import Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from cassandra.config import settings
+from cassandra.config import is_production_environment, settings
 from cassandra.db.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,18 @@ def _record_failure(client_key: str) -> None:
 
 
 def require_admin(request: Request, x_admin_secret: str | None = Header(default=None)) -> None:
+    # Explicit development/private-mode bypass, per the owner's direct
+    # request: while Cassandra is still private and this instance is
+    # NOT a real deployment, don't force re-entering the admin secret on
+    # every visit. Deliberately does NOT delete or weaken the auth logic
+    # below -- is_production_environment() (config.py) is the exact same
+    # gate api/main.py's startup already uses to refuse a weak secret in
+    # production, so the moment this is a real deployment (Replit's own
+    # REPLIT_DEPLOYMENT env var, or an explicit settings.production_mode
+    # override), every line below runs unchanged and Admin is exactly as
+    # protected as it always was.
+    if not is_production_environment():
+        return
     client_key = _client_key(request)
     if _is_locked_out(client_key):
         # Not re-logged on every locked-out retry (that's just the same

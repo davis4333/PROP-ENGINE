@@ -23,3 +23,15 @@ def test_health_reports_none_rather_than_erroring_when_sha_unavailable(client, m
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["git_commit_sha"] is None
+
+
+def test_health_reports_admin_auth_required_matching_the_real_deployment_gate(client, monkeypatch):
+    # Lets the Admin page know whether to show the secret-entry gate
+    # without needing a secret to find out -- must always match
+    # is_production_environment(), the exact condition deps.py's
+    # require_admin() itself gates on.
+    monkeypatch.setattr(main, "is_production_environment", lambda: True)
+    assert client.get("/health").json()["admin_auth_required"] is True
+
+    monkeypatch.setattr(main, "is_production_environment", lambda: False)
+    assert client.get("/health").json()["admin_auth_required"] is False

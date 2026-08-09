@@ -35,19 +35,43 @@ from ._helpers import make_game, make_player, make_snapshot, publish
 AUTH = {"X-Admin-Secret": settings.admin_shared_secret}
 
 
-def test_admin_status_requires_auth(client):
+def _force_production(monkeypatch) -> None:
+    """deps.require_admin() now bypasses ADR 0011's auth entirely outside
+    a real deployment (the owner's explicit dev-mode-convenience request)
+    -- tests that specifically exercise auth ENFORCEMENT must force
+    is_production_environment() True, matching the exact real-deployment
+    condition under which that enforcement actually runs."""
+    monkeypatch.setattr(deps, "is_production_environment", lambda: True)
+
+
+def test_admin_status_works_without_any_secret_outside_a_real_deployment(client, monkeypatch):
+    # The owner's explicit dev-mode request: outside a real deployment
+    # (is_production_environment() False, the actual default for local/
+    # dev/CI/test runs -- see config.py), Admin must not require typing a
+    # secret at all. monkeypatch here is a no-op override back to the
+    # real function, making explicit that this test relies on the
+    # fixture's actual default, not an accidental one.
+    monkeypatch.setattr(deps, "is_production_environment", lambda: False)
+    response = client.get("/api/admin/status")
+    assert response.status_code == 200
+
+
+def test_admin_status_requires_auth(client, monkeypatch):
+    _force_production(monkeypatch)
     response = client.get("/api/admin/status")
     assert response.status_code == 401
 
 
-def test_admin_status_rejects_wrong_secret(client):
+def test_admin_status_rejects_wrong_secret(client, monkeypatch):
+    _force_production(monkeypatch)
     response = client.get("/api/admin/status", headers={"X-Admin-Secret": "wrong"})
     assert response.status_code == 401
 
 
-def test_failed_admin_auth_is_logged_without_the_attempted_secret(client, caplog):
+def test_failed_admin_auth_is_logged_without_the_attempted_secret(client, caplog, monkeypatch):
     import logging
 
+    _force_production(monkeypatch)
     with caplog.at_level(logging.WARNING, logger="cassandra.api.deps"):
         client.get("/api/admin/status", headers={"X-Admin-Secret": "a-guessed-secret-value"})
 
@@ -251,7 +275,8 @@ def test_umpire_stub_never_appears_as_a_blocking_issue(client, db_session):
     assert not any("umpire_stub" in issue for issue in body["blocking_issues"])
 
 
-def test_admin_run_actions_require_auth(client):
+def test_admin_run_actions_require_auth(client, monkeypatch):
+    _force_production(monkeypatch)
     assert client.post("/api/admin/runs/2023-06-15/run").status_code == 401
     assert client.post("/api/admin/runs/2023-06-15/grade").status_code == 401
 
@@ -260,6 +285,7 @@ def test_repeated_wrong_secrets_get_locked_out(client, monkeypatch):
     # Regression for a real security-review finding: the admin gate had
     # no rate limiting at all, making a weak/guessable secret an
     # unbounded brute-force target once genuinely publicly reachable.
+    _force_production(monkeypatch)
     monkeypatch.setattr(deps, "_failures_by_client", {})
     for _ in range(deps._FAILURE_LIMIT):
         response = client.get("/api/admin/status", headers={"X-Admin-Secret": "wrong"})
@@ -276,6 +302,7 @@ def test_repeated_wrong_secrets_get_locked_out(client, monkeypatch):
 
 
 def test_correct_secret_never_counts_as_a_failure(client, monkeypatch):
+    _force_production(monkeypatch)
     monkeypatch.setattr(deps, "_failures_by_client", {})
     for _ in range(deps._FAILURE_LIMIT + 5):
         response = client.get("/api/admin/status", headers=AUTH)
@@ -324,12 +351,14 @@ def _seed_manual_line_slate(db_session) -> None:
     db_session.flush()
 
 
-def test_lines_preview_requires_auth(client):
+def test_lines_preview_requires_auth(client, monkeypatch):
+    _force_production(monkeypatch)
     response = client.post(f"/api/admin/lines/{MANUAL_LINE_SLATE_DATE}/preview", json={"entries": []})
     assert response.status_code == 401
 
 
-def test_lines_import_requires_auth(client):
+def test_lines_import_requires_auth(client, monkeypatch):
+    _force_production(monkeypatch)
     response = client.post(f"/api/admin/lines/{MANUAL_LINE_SLATE_DATE}/import", json={"entries": []})
     assert response.status_code == 401
 
@@ -577,7 +606,8 @@ def test_admin_status_tracker_reflects_real_grades(client, db_session):
     assert tracker["win_rate"] == 1.0
 
 
-def test_reset_tracker_endpoint_requires_auth(client):
+def test_reset_tracker_endpoint_requires_auth(client, monkeypatch):
+    _force_production(monkeypatch)
     response = client.post("/api/admin/tracker/reset")
     assert response.status_code == 401
 
