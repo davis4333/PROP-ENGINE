@@ -751,6 +751,58 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
     defensive-programming gap the fuzz test surfaced; regression tests
     added directly against the distribution class and at each model's
     `predict()` entry point.
+- **Second follow-up round the same night: three more independent
+  reviews (security, architecture, documentation) plus a direct
+  concurrency test, and three more real fixes.**
+  - **Architecture review** found the NaN/Infinity guard above had a real
+    blast-radius problem: an unhandled `ValueError` from one entry's bad
+    features propagated out of `run_slate.py`'s REVIEW-stage loop and
+    would fail the *entire* slate's run (every pitcher), not just the
+    one with bad data. **Fixed**: `model.predict()` is now wrapped
+    per-entry; a `ValueError` degrades that one entry to a visible
+    `REJECTED`/`NO_PLAY` decision with the already-defined
+    `MODEL_UNHEALTHY` reason code (reusing existing vocabulary, not
+    inventing a new failure mode), while every other entry in the same
+    slate is still projected and published normally. Caught a real bug
+    while writing the regression test for this (`logger` was referenced
+    in `run_slate.py` without ever being imported/defined -- would have
+    been a `NameError` on the very first real invocation of this path).
+  - **Security review** (bandit/pip-audit clean, no secrets, no SQL
+    injection, admin auth uniformly enforced, no stored-XSS path) found
+    one real medium-severity issue: `PoissonStrikeoutDistribution.cdf()`
+    is an O(k) pure-Python loop, and `decision/engine.py` derives `k`
+    directly from a market line -- an unbounded/malformed line (a fat-
+    fingered admin import, or a malformed vendor response) could hang a
+    request thread. **Fixed** with defense in depth: `cdf()` now caps `k`
+    at `MAX_CDF_K=500` (changes nothing for any real projection -- P(K <=
+    500) is already indistinguishable from 1.0 for any realistic mean),
+    and `LineImportEntryIn.line` now has schema-level bounds (`-1 < line
+    < 100`) so a malformed import is rejected with a clear 422 rather
+    than silently accepted.
+  - **Documentation audit** found `docs/TRAINING_READINESS_REPORT.md` had
+    gone stale to the point of being actively wrong -- it still stated
+    "No promotion... exists anywhere in this repository," which was true
+    when written but false after this session's real promotion. **Fixed**
+    with dated update notes at each affected caveat (matching this
+    document's own established convention of annotating rather than
+    silently rewriting historical snapshots), and a direct correction on
+    the now-false explicit statement. Also fixed a real small inaccuracy
+    this doc's own "Tests, tooling, CI" section had: it said "23
+    guardrails regression tests" in two places, in the same commit that
+    had just made the real count 24.
+  - **Direct concurrency test** (not a subagent review): the retraining
+    scheduler's Postgres advisory-lock claim ("at most one process
+    actually does a tick's work") had never been exercised under real
+    concurrent execution, only asserted in a docstring. Ran two real
+    concurrent processes against the same lock key -- confirmed a
+    long-holder genuinely blocks a concurrent acquire attempt, and the
+    lock is correctly released and reusable afterward.
+  - All three code fixes have regression tests
+    (`test_run_slate_isolates_one_entrys_model_failure_instead_of_failing_the_whole_slate`,
+    `test_cdf_caps_absurdly_large_k_instead_of_hanging`,
+    `test_lines_preview_rejects_an_absurd_line_value`) and the full gate
+    (471 backend tests, frontend, e2e/accessibility, build) passes clean
+    against a freshly migrated database.
 - **Backfill run status: complete.** The 2023-01-01-to-present backfill
   (`backfill_run_id=backfill_8aae900893d7`) finished with `status=
   completed`, 0 failed games across its entire run, and a small number
@@ -790,18 +842,31 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
 
 ### Tests, tooling, CI
 
-- 204 engine + scripts tests (181 engine: unit, integration, API, the
-  point-in-time leakage suite; 23 guardrails regression tests) — all
-  passing on a freshly rebuilt database. (This count grows with the
-  platform; verify against `make test-engine`/CI rather than treating
-  this number as pinned.)
+- Engine + scripts tests, including the point-in-time leakage suite and
+  24 `scripts/guardrails.py` regression tests — all passing, verified
+  2026-08-08 against a **freshly created, migrated-from-empty**
+  database. (This count grows with the platform and both figures were
+  already stale once before from a doc-update lag an independent
+  documentation audit caught -- verify against `make test-engine`/CI
+  rather than treating either number as pinned.)
+- **Real caveat, not hypothetical**: several tables this session wrote
+  real rows to via genuinely-committing code paths (`model_artifacts`/
+  `model_registry_events` from real promotions, `audit_events` from a
+  real tracker reset) now persist in whatever shared dev database this
+  was run against. Running the suite again against that *same*, already-
+  polluted database can produce spurious failures (e.g.
+  `MultipleResultsFound` from `registry/service.py`'s deliberately strict
+  `active_artifact()`) that are pre-existing environment state, not a
+  regression -- confirmed by an independent documentation audit that
+  reproduced this and then confirmed a clean pass against a fresh
+  database. Drop and recreate the database (or use a real isolated test
+  database/testcontainers, still not wired up -- see "Not automatable"
+  below) before trusting a "tests failed" result as a real regression.
 - Frontend: 15 Vitest component tests, 7 Playwright + axe accessibility
   tests, `next build` succeeds.
 - `make verify` (lint, format-check, typecheck, `bandit` + `pip-audit`,
   `scripts/guardrails.py`, migrations-from-empty, the full test suite,
-  frontend gate, build) passes clean end to end.
-- `scripts/guardrails.py`: 23 regression tests, wired into CI and a
-  Claude Code PreToolUse hook.
+  frontend gate, build) passes clean end to end against a fresh database.
 - CI (`.github/workflows/ci.yml`): engine job + web job, matching `make
   verify`'s checks.
 

@@ -25,8 +25,10 @@ from cassandra.config import settings
 from cassandra.db.models.pipeline import PipelineRunStage
 from cassandra.historical.challenger_poisson import COEFFICIENT_NAMES
 from cassandra.identity_ids import mlb_player_id
+from cassandra.models.baseline import BaselinePoissonModel
+from cassandra.orchestration import run_slate as run_slate_module
 from cassandra.orchestration.run_slate import grade_slate_run, run_slate
-from cassandra.registry.service import create_model_artifact, record_registry_event
+from cassandra.registry.service import ResolvedModel, create_model_artifact, record_registry_event
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "mlb_api"
 SLATE_DATE = datetime(2023, 6, 15).date()
@@ -173,6 +175,100 @@ def test_run_slate_then_grade_slate_end_to_end(db_session, tmp_path: Path):
         .one()
     )
     assert grade_stage.status == "succeeded"
+
+
+class _OnePitcherPoisonedModel:
+    """Delegates to a real BaselinePoissonModel for every entry except
+    the one whose features indicate real recent data (`recent_k_rate_tier
+    != "league_default"` -- in this slate's fixtures, only Kikuchi has a
+    real gamelog, so this deterministically targets exactly him without
+    needing player identity inside predict()'s features dict, which
+    doesn't carry one). Simulates PoissonStrikeoutDistribution's real
+    NaN/Infinity guard rejecting one entry's malformed features."""
+
+    model_version = "poisoned-test-model-0.1.0"
+
+    def __init__(self, real_model):
+        self._real_model = real_model
+
+    def predict(self, features):
+        if features.get("recent_k_rate_tier") != "league_default":
+            raise ValueError("simulated: this one entry's features were malformed")
+        return self._real_model.predict(features)
+
+
+@respx.mock
+def test_run_slate_isolates_one_entrys_model_failure_instead_of_failing_the_whole_slate(
+    db_session, tmp_path: Path, monkeypatch
+):
+    # Regression for a real gap an independent architecture review found:
+    # PoissonStrikeoutDistribution's NaN/Infinity guard (added after a
+    # numerical-edge-case stress test) raises ValueError -- without a
+    # per-entry catch around model.predict(), that exception would
+    # propagate out of the whole REVIEW-stage loop and fail this entire
+    # slate's run (all 20 pitchers), not just the one with bad features.
+    # This proves the fix: one poisoned entry degrades to a visible
+    # REJECTED/MODEL_UNHEALTHY projection, every other entry in the same
+    # slate is still projected and published normally.
+    respx.get(f"{MLB_STATS_API_BASE}/schedule").mock(
+        return_value=httpx.Response(200, json=_load("schedule_2023-06-15.json"))
+    )
+    respx.route(url__regex=rf"{re.escape(MLB_STATS_API_BASE)}/people/\d+/stats").mock(
+        side_effect=_gamelog_side_effect
+    )
+    respx.get(ARCHIVE_URL).mock(return_value=httpx.Response(200, json=_load("weather_archive_camden.json")))
+    respx.route(url__regex=rf"{re.escape(LIVE_FEED_BASE)}/game/\d+/feed/live").mock(
+        side_effect=_feed_side_effect
+    )
+
+    monkeypatch.setattr(
+        run_slate_module,
+        "resolve_active_model",
+        lambda session: ResolvedModel(
+            model=_OnePitcherPoisonedModel(BaselinePoissonModel()),
+            model_version="poisoned-test-model-0.1.0",
+            active_artifact_id=None,
+        ),
+    )
+
+    lines_drop_dir = _lines_drop_dir(tmp_path)
+    cutoff_at = datetime.now(UTC) + timedelta(minutes=2)
+    client = httpx.Client()
+
+    run_result = run_slate(
+        db_session, SLATE_DATE, cutoff_at, http_client=client, lines_drop_dir=lines_drop_dir, publish=True
+    )
+    db_session.flush()
+
+    # The run as a whole must succeed, not fail -- one bad entry is not a
+    # whole-run failure.
+    stage_status = {
+        s.stage: s.status
+        for s in db_session.query(PipelineRunStage).filter(PipelineRunStage.run_id == run_result.run_id).all()
+    }
+    assert stage_status["PUBLISH"] == "succeeded"
+
+    # All 20 entries still got a published projection -- none silently
+    # dropped because of the one failure.
+    assert run_result.entries_frozen == 20
+    assert len(run_result.projections_published) == 20
+
+    kikuchi_id = mlb_player_id(KIKUCHI_MLB_ID)
+    kikuchi_proj = next(p for p in run_result.projections_published if p.player_id == kikuchi_id)
+    assert kikuchi_proj.decision == "NO_PLAY"
+    assert kikuchi_proj.decision_status == "REJECTED"
+    assert kikuchi_proj.probability_over is None
+    assert kikuchi_proj.probability_under is None
+    assert "MODEL_UNHEALTHY" in kikuchi_proj.reason_codes
+
+    # Every other entry (all league_default-tier, so unaffected by the
+    # poisoned model) still got a normal decision -- their own real
+    # data-quality reason (MARKET_CONTEXT_INCOMPLETE, no line) is present,
+    # never MODEL_UNHEALTHY.
+    other_projs = [p for p in run_result.projections_published if p.player_id != kikuchi_id]
+    assert len(other_projs) == 19
+    assert all("MODEL_UNHEALTHY" not in p.reason_codes for p in other_projs)
+    assert all(p.decision == "NO_PLAY" and p.decision_status == "REJECTED" for p in other_projs)
 
 
 @respx.mock

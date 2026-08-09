@@ -251,6 +251,24 @@ def test_lines_preview_matches_a_real_confirmed_starter(client, db_session):
     assert body["unmatched"] == []
 
 
+def test_lines_preview_rejects_an_absurd_line_value(client, db_session):
+    # Regression for a real security-review finding: an unbounded line
+    # reaches PoissonStrikeoutDistribution.cdf()'s O(k) loop
+    # (decision/engine.py's `math.floor(line)`) -- a fat-fingered/
+    # malicious extreme value should be rejected cleanly at the schema
+    # boundary (422), not silently accepted and only caught deep in the
+    # math.
+    _seed_manual_line_slate(db_session)
+
+    response = client.post(
+        f"/api/admin/lines/{MANUAL_LINE_SLATE_DATE}/preview",
+        headers=AUTH,
+        json={"entries": [{"player_name": "Admin Test Pitcher", "line": 10_000_000.0}]},
+    )
+
+    assert response.status_code == 422
+
+
 def test_lines_preview_reports_unmatched_entries(client, db_session):
     _seed_manual_line_slate(db_session)
 

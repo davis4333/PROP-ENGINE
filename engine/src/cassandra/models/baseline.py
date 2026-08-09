@@ -33,6 +33,7 @@ PARK_ADJ_BOUNDS = (0.85, 1.15)
 WEATHER_ADJ_BOUNDS = (0.90, 1.10)
 OPPONENT_ADJ_BOUNDS = (0.85, 1.15)
 MIN_PROJECTION_MEAN = 0.05
+MAX_CDF_K = 500
 
 
 @dataclass(frozen=True)
@@ -65,9 +66,22 @@ class PoissonStrikeoutDistribution:
         return math.sqrt(self.mean)
 
     def cdf(self, k: int) -> float:
-        """P(strikeouts <= k), the regular Poisson CDF."""
+        """P(strikeouts <= k), the regular Poisson CDF. `k` is capped at
+        MAX_CDF_K -- found by an independent security review: this is an
+        O(k) pure-Python loop, and decision/engine.py derives k directly
+        from a market line (`math.floor(line)`), so an unbounded/
+        malformed line value (a fat-fingered admin import, or a malformed
+        vendor response) could otherwise hang a request thread. The cap
+        is far above any real MLB single-game strikeout total (the modern
+        record is ~20) and changes nothing about the returned value for
+        any real projection -- for any realistic mean, P(K <= 500) is
+        already indistinguishable from 1.0 in floating point. Line-level
+        input validation (api/schemas.py's LineImportEntryIn) is the
+        primary defense; this is the belt-and-suspenders backstop so the
+        math itself can't be weaponized regardless of what validates it."""
         if k < 0:
             return 0.0
+        k = min(k, MAX_CDF_K)
         return sum(self._pmf(i) for i in range(k + 1))
 
     def _pmf(self, k: int) -> float:

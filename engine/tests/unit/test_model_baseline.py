@@ -5,6 +5,7 @@ import math
 import pytest
 
 from cassandra.models.baseline import (
+    MAX_CDF_K,
     MIN_PROJECTION_MEAN,
     BaselinePoissonModel,
     PoissonStrikeoutDistribution,
@@ -118,6 +119,26 @@ def test_poisson_strikeout_distribution_rejects_infinite_mean():
 def test_poisson_strikeout_distribution_rejects_negative_mean():
     with pytest.raises(ValueError, match="non-negative"):
         PoissonStrikeoutDistribution(mean=-1.0)
+
+
+def test_cdf_caps_absurdly_large_k_instead_of_hanging():
+    # Regression for a real security-review finding: cdf(k) is an O(k)
+    # pure-Python loop, and decision/engine.py derives k directly from a
+    # market line (`math.floor(line)`) -- an unbounded/malformed line
+    # (e.g. a fat-fingered admin import, or a malformed vendor response)
+    # could otherwise make this loop run tens of millions of iterations.
+    # A huge k must still return a sane probability near 1.0 fast, not
+    # actually iterate that far.
+    dist = PoissonStrikeoutDistribution(mean=6.0)
+    assert dist.cdf(10_000_000) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_cdf_capped_value_matches_uncapped_for_a_realistic_mean():
+    # The cap must not change the returned value for any real projection
+    # -- confirm cdf(MAX_CDF_K) is already indistinguishable from the true
+    # (uncapped, mathematically exact) limit of 1.0 for a typical mean.
+    dist = PoissonStrikeoutDistribution(mean=6.0)
+    assert dist.cdf(MAX_CDF_K) == pytest.approx(1.0, abs=1e-9)
 
 
 def test_baseline_model_raises_loudly_rather_than_silently_producing_nan():

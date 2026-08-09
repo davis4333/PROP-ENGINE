@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from cassandra.decision.reason_codes import describe
 
@@ -192,7 +192,13 @@ class GradeActionResponse(BaseModel):
 
 class LineImportEntryIn(BaseModel):
     player_name: str
-    line: float
+    # Bounded well outside any real MLB single-game strikeout total (the
+    # modern record is ~20) -- found by an independent security review:
+    # an unbounded line reaches PoissonStrikeoutDistribution.cdf()'s O(k)
+    # loop (decision/engine.py's `math.floor(line)`), so a malformed/
+    # malicious extreme value could otherwise hang a request thread.
+    # Rejected here with a clear 422, not silently clamped.
+    line: float = Field(gt=-1, lt=100)
     over_price: float | None = None
     under_price: float | None = None
     market: str = "pitcher_strikeouts"

@@ -119,10 +119,23 @@ caveats on that result.
    different fold counts, feature-engineering choices, or a
    negative-binomial alternative. Real but modest, and a real promotion
    decision should see more than this.
+   *(UPDATE 2026-08-08: a real promotion decision was made -- see
+   `CURRENT_STATE_AUDIT.md`'s "First real promotion of a non-baseline
+   model to ACTIVE" entry. This caveat is exactly what an independent
+   model-validator review flagged as unresolved at that time; still only
+   one model family (a negative-binomial challenger remains unbuilt).
+   Left this paragraph unmodified below as the point-in-time snapshot it
+   was at the time this report was written.)*
 3. **No statistical-significance test.** The report gives per-fold and
    aggregate MAE, not a paired significance test (e.g. a paired
    bootstrap) on whether the gap is distinguishable from noise at this
    sample size.
+   *(UPDATE 2026-08-08: this has since been run -- a paired bootstrap,
+   5,000 resamples over 15,785 held-out rows pooled across 7 folds, on
+   the larger 2023-2026 dataset. 95% CI for the mean error reduction:
+   [0.0375, 0.0620] strikeouts, excluding zero. See
+   `CURRENT_STATE_AUDIT.md`'s "Follow-up same night" entry -- this was a
+   one-off script, not committed as a permanent, rerunnable test.)*
 4. **`STRICT_LIVE_COMPATIBLE`, not production-validated.** This dataset
    deliberately excludes lineup/park/weather features a promoted model
    would need to be checked against the *actual* live feature pipeline's
@@ -173,6 +186,26 @@ caveats on that result.
    outcomes, not market lines).
 
 ## Explicit statement
+
+**UPDATE 2026-08-08 -- the paragraph below is now out of date and its
+central claim is no longer true; kept unmodified beneath this notice as
+the point-in-time snapshot it was when written, per this document's own
+convention (see the "model registry" caveat above), not silently
+corrected in place.** A `poisson-regression` challenger, trained on the
+full 2023-2026 backfill, was promoted to ACTIVE via `cassandra
+promote-model` after a real human-reviewed walk-forward comparison
+(`registry/service.py`'s `promote_to_active()` structurally refuses to
+promote anything missing that comparison). It has served real live
+`run_slate()` calls. This did **not** happen through this document's
+walk-forward/evaluation subsystem, which still only ever writes
+`HISTORICAL_RECONSTRUCTION`-labeled reports to its own frozen files, per
+CLAUDE.md non-negotiable #8 -- promotion is a separate, human-gated
+action (`registry/service.py`, `orchestration/retraining_scheduler.py`),
+and remains the only path by which any artifact ever reaches ACTIVE. See
+`CURRENT_STATE_AUDIT.md`'s "First real promotion of a non-baseline model
+to ACTIVE" entry for the full, current picture, including what an
+independent review found and what's still open (tail-probability
+calibration at high lines).
 
 A real baseline evaluation and a real walk-forward challenger comparison
 both exist now, with real numbers from real 2023-2024 backfill data (see

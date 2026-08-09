@@ -21,6 +21,7 @@ projection version. Every call is a new `PipelineRun` row.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -61,6 +62,8 @@ from cassandra.ledger.service import current_projections_for_slate, publish_proj
 from cassandra.pit.asof import all_as_of
 from cassandra.pit.snapshot_builder import PitcherSlateEntry, build_snapshot, games_for_slate_date
 from cassandra.registry.service import resolve_active_model
+
+logger = logging.getLogger(__name__)
 
 # Venue coordinates for the (free) Open-Meteo weather adapter -- MLB's own
 # schedule/venue payload doesn't include lat/lon, and there's no
@@ -396,8 +399,51 @@ def run_slate(
         _stage(session, run_id, "REVIEW", "running", started=True)
         decisions_by_entry: dict[int, tuple[float | None, Decision]] = {}
         for i, entry in enumerate(projectable):
-            dist = model.predict(features_by_entry[i])
             raw_line = float(entry.lines[0].line) if entry.lines else None
+            try:
+                dist = model.predict(features_by_entry[i])
+            except ValueError:
+                # The active model refused to produce a usable distribution
+                # for this ONE entry (e.g. a NaN/invalid feature value --
+                # see PoissonStrikeoutDistribution.__post_init__, added
+                # after a numerical-edge-case stress test). Found by an
+                # independent architecture review: without this catch, one
+                # bad pitcher's features would raise all the way out of
+                # this loop and fail the ENTIRE slate's run via the outer
+                # except-block below -- a far worse blast radius than the
+                # thing being guarded against. Every other per-entry data-
+                # quality problem in this pipeline (missing line,
+                # unconfirmed lineup) degrades to a visible REJECTED
+                # NO_PLAY with a reason code instead of crashing; this
+                # mirrors that same pattern via the already-defined
+                # MODEL_UNHEALTHY reason code (decision/reason_codes.py),
+                # rather than inventing a new failure mode. Every other
+                # entry in this slate is unaffected and still projected
+                # normally.
+                logger.warning(
+                    "run_slate: model.predict() rejected entry %s (game_id=%s) -- "
+                    "publishing REJECTED/MODEL_UNHEALTHY for this entry only",
+                    i,
+                    entry.game.game_id,
+                )
+                reason_codes = [f.reason_code for f in entry.quality_findings]
+                if "MODEL_UNHEALTHY" not in reason_codes:
+                    reason_codes.append("MODEL_UNHEALTHY")
+                decisions_by_entry[i] = (
+                    raw_line,
+                    Decision(
+                        decision="NO_PLAY",
+                        decision_status="REJECTED",
+                        probability_over=None,
+                        probability_under=None,
+                        probability_push=None,
+                        projection_mean=0.0,
+                        projection_sd=0.0,
+                        edge=0.0,
+                        reason_codes=reason_codes,
+                    ),
+                )
+                continue
             # raw_line passed as-is (never substituted with a placeholder
             # value) -- decide() itself forces NO_PLAY/REJECTED with null
             # probabilities when there's no real market line, rather than
