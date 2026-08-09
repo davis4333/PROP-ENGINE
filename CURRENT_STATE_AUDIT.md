@@ -572,9 +572,21 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   never causes a redundant attempt) it: backfills the trailing
   `RETRAIN_BACKFILL_LOOKBACK_DAYS` of newly-completed games, rebuilds the
   training dataset, runs a real out-of-sample walk-forward comparison
-  against the current baseline, and -- **only if the challenger's
-  aggregate walk-forward MAE genuinely beats the baseline's** -- fits and
-  registers a new `CANDIDATE` artifact. Every attempt (successful,
+  against the current baseline **and, whenever one exists, whatever
+  model is currently ACTIVE** (`historical/walk_forward.py`'s
+  `active_model`/`active_model_version` parameters, evaluated fresh per
+  fold, never refit -- added 2026-08-09 closing a real gap: a candidate
+  was previously only ever judged against the permanent baseline, never
+  against what Cassandra is actually serving live predictions with right
+  now), and -- **only if the challenger's aggregate walk-forward MAE
+  genuinely beats the baseline's** -- fits and registers a new
+  `CANDIDATE` artifact. The active-model comparison (when one exists) is
+  not a second registration gate -- a candidate that beats baseline but
+  loses to the active model is still registered, with `beats_active_model`
+  visible in its `training_metrics`, the audit-event payload, and the
+  Admin page's Model Comparison card, so a human reviewing it can see the
+  real answer to "is this actually better than what's live" before
+  deciding whether to promote it. Every attempt (successful,
   skipped, or errored) is durably logged to `audit_events`, so cadence
   gating and an operator's own audit trail both work even when nothing
   gets registered. **It never calls `promote_to_active` or
@@ -607,10 +619,20 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
   to a manually-trained artifact. This is a real, deliberate behavior
   change (existing promotion tests needed updating to attach walk-forward
   metrics) -- not a hypothetical hardening.
+- **Now built (2026-08-09, not "not yet" anymore)**: a negative-binomial
+  challenger family (`historical/challenger_negative_binomial.py`,
+  `family="negative-binomial-regression"` in
+  `run_walk_forward_validation`/`train_final_poisson_model`) -- fixes the
+  Poisson baseline's mean=variance assumption (real overdispersion,
+  `variance/mean ~= 1.30`, is exactly the calibration gap the 2026-08-08
+  promotion review below found) via a dispersion parameter fit by a 1-D
+  golden-section MLE search, reusing the same mean regression as the
+  Poisson-regression challenger so the two are a fair, apples-to-apples
+  comparison.
 - **Not yet built**: a shadow-mode runner (evaluating a `CANDIDATE`
   against live slates without its predictions ever reaching
-  `projections`/`grades`), negative-binomial/gradient-boosted challenger
-  alternatives, and any automated criteria for *how much* walk-forward
+  `projections`/`grades`), a gradient-boosted challenger alternative, and
+  any automated criteria for *how much* walk-forward
   improvement should be required before a candidate is even worth a
   human's review (the scheduler's bar is "beats the baseline at all,"
   deliberately not a calibrated margin -- a real product decision this
@@ -886,14 +908,72 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
 
 - Next.js App Router, TypeScript strict: Today (`/`), Results Ledger
   (`/ledger`), Admin (`/admin`) — the three pages ADR 0012 scopes this
-  build to. Admin is gated by the same shared-secret header, entered
-  client-side and proxied to the engine through Next.js's own origin
-  (`next.config.ts` rewrite) rather than needing a second exposed port —
-  works the same locally, in Docker Compose, and on a single-port host.
+  build to. Admin's shared-secret header is proxied to the engine through
+  Next.js's own origin (`next.config.ts` rewrite) rather than needing a
+  second exposed port — works the same locally, in Docker Compose, and on
+  a single-port host.
 - Verified live end to end against the real seeded demo slate: screenshots
   captured of all three pages showing real projections, real WIN/LOSS/
   PUSH grades, real source health, and all 7 pipeline stages with real
   statuses.
+- **Today page reworked (2026-08-09) into three visually distinct
+  sections** (`TodayBoard`/`ProjectionCard`): Qualified Plays / Watch-
+  Uncertain / No Plays, replacing a single flat table. Ranking itself
+  (`api/routers/today.py`) was already correct on review — sorted by
+  `decision_status` tier then `max(P(over), P(under))`, OVER/UNDER
+  treated equally, never a raw projected total — no backend change
+  needed there. Each card now also shows `edge` (recomputed from stored
+  probabilities via `decision/engine.py`'s `edge_for_display()`, the same
+  formula `decide()` itself uses), the real line source/age (re-derived
+  via the same point-in-time as-of query `decide()` saw, at the
+  projection's fixed `as_of` cutoff), a `dataQualityTier` badge (COMPLETE/
+  GOOD/LIMITED/POOR, a real documented formula over `reason_codes`, never
+  a fabricated score), and grounded "why Cassandra likes this"/"risks"
+  bullets (`decision/explain.py`) built only from the projection's actual
+  stored features/probabilities/reason codes — never invented after the
+  fact, and always empty for a NO_PLAY (nothing to like about a rejected
+  call, only reasons).
+- **Admin visual overhaul, in progress (2026-08-09)**: a System Snapshot
+  strip at the top (status light — green HEALTHY / amber DEGRADED, driven
+  by the existing `blocking_issues` — plus real counts: today's games/
+  qualified/no-plays via the same query `GET /api/today` uses,
+  `historical_training_rows` via a real `COUNT(*)` on
+  `historical_pitcher_starts`, active model, pending candidates, track
+  record, and real scheduler/retraining config); a Model Comparison card
+  per pending candidate (replacing a raw `training_metrics` dict dump)
+  showing real MAE and % improvement vs baseline and vs active, with an
+  explicit "NO CHALLENGER CURRENTLY WAITING" state instead of the section
+  just disappearing; and the new Track Record scoreboard (below). **Still
+  not built**: the visual daily-workflow diagram and learning-loop
+  diagram the owner asked for (boxes/arrows showing INGEST→...→GRADE and
+  the retrain→walk-forward→candidate→human-review loop with real
+  per-stage status) — the System Snapshot strip and the existing
+  `PipelineStageTracker` cover the same information in list/status-badge
+  form today, not yet as a connected visual diagram.
+- **Track record scoreboard, real and LIVE-only (2026-08-09,
+  `grading/scoreboard.py`)**: today/last-7-days/last-30-days/all-time
+  windows, bucketed by the game's slate date (operating timezone),
+  computed from a single query over CURRENT (official-first, latest-
+  version), `record_label="LIVE"` projections left-joined to their
+  current grade — never mixes in DEMO/BACKTEST/PAPER/SHADOW. Each window
+  reports wins/losses/pushes/voids/no_plays, `waiting` (a real OVER/UNDER
+  call with no grade yet — distinct from a graded NO_PLAY result), win
+  rate, and mean absolute projection error with its sample size. Shown on
+  Admin above the existing resettable Performance Tracker counter, which
+  it does not replace (that counter is still the operator's own
+  reset-on-demand view; the scoreboard is the permanent one).
+- **Admin auth bypass outside a real deployment (2026-08-09,
+  `api/deps.py`)**: the owner's explicit request for the private-testing
+  phase — `require_admin()` now skips the secret check entirely when
+  `config.is_production_environment()` is false (the same gate
+  `api/main.py`'s startup already uses to refuse a weak secret in
+  production), so the local/dev instance never needs the password re-
+  entered. Every line of the real hmac-comparison + brute-force-lockout
+  logic is unchanged and runs exactly as before the moment this actually
+  is a real deployment (Replit's `REPLIT_DEPLOYMENT` env var, or an
+  explicit `production_mode` override). `GET /health` now also reports
+  `admin_auth_required` so the Admin page can decide whether to even show
+  the password form without needing a secret to ask.
 
 ### Tests, tooling, CI
 
@@ -997,6 +1077,15 @@ to invent missing product decisions:
   build — it must be rotated to a real, unique, high-entropy secret
   (e.g. `openssl rand -hex 32`) in Replit Secrets *before* pulling this
   change, or the next deploy will refuse to start by design.
+  **2026-08-09**: outside a real deployment (`is_production_environment()`
+  false — the local/dev/CI default), `require_admin()` now skips the
+  secret check entirely, per the owner's explicit request not to
+  re-enter it during private testing. This does not change the
+  production-refuses-to-boot-on-a-weak-secret behavior above at all —
+  the bypass and the startup gate key off the exact same
+  `is_production_environment()` check, so the moment this is a real
+  deployment both the full auth check and the weak-secret refusal are
+  active, unchanged.
 - **Admin actions**: only `run` and `grade` are implemented. ADR 0007
   describes a richer revalidate/regenerate/publish state-guard split;
   that ADR's own status note marks it "Not yet implemented," deferred

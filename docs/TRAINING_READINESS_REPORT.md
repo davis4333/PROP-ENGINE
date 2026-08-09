@@ -126,6 +126,15 @@ caveats on that result.
    one model family (a negative-binomial challenger remains unbuilt).
    Left this paragraph unmodified below as the point-in-time snapshot it
    was at the time this report was written.)*
+   *(UPDATE 2026-08-09: the negative-binomial challenger is now built --
+   `historical/challenger_negative_binomial.py`,
+   `family="negative-binomial-regression"` in
+   `run_walk_forward_validation`/`train_final_poisson_model` -- a
+   dispersion parameter fit by golden-section MLE search, sharing the
+   Poisson-regression challenger's mean regression for a fair
+   comparison. Not yet promoted to ACTIVE or compared against the
+   currently-active model in a real walk-forward run at the time of this
+   update -- see `CURRENT_STATE_AUDIT.md` for current status.)*
 3. **No statistical-significance test.** The report gives per-fold and
    aggregate MAE, not a paired significance test (e.g. a paired
    bootstrap) on whether the gap is distinguishable from noise at this
