@@ -1,0 +1,59 @@
+.board {
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.sectionHeading {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  margin: 0;
+}
+
+.sectionHeading.qualified {
+  color: #c4b5fd;
+}
+
+.sectionHeading.uncertain {
+  color: #fde68a;
+}
+
+.sectionHeading.rejected {
+  color: #b4b4bd;
+}
+
+.sectionCount {
+  font-size: 0.8125rem;
+  color: #a1a1aa;
+}
+
+.sectionNote {
+  font-size: 0.8125rem;
+  color: #a1a1aa;
+  margin: 0;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 0.85rem;
+}
+
+.empty {
+  font-size: 0.8125rem;
+  color: #71717a;
+}

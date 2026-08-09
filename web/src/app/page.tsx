@@ -1,5 +1,5 @@
 import styles from "./page.module.css";
-import { ProjectionsTable } from "@/components/ProjectionsTable";
+import { TodayBoard } from "@/components/TodayBoard";
 import { fetchToday } from "@/lib/api";
 
 export default async function TodayPage({
@@ -50,7 +50,7 @@ export default async function TodayPage({
           </div>
         </div>
       </div>
-      <ProjectionsTable
+      <TodayBoard
         projections={today.projections}
         emptyMessage="No games found for this slate date."
       />

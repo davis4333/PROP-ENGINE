@@ -36,6 +36,11 @@ function makeProjection(overrides: Partial<ProjectionOut> = {}): ProjectionOut {
     is_late_publication: false,
     record_label: "LIVE",
     grade: null,
+    edge: 0.22,
+    line_source: "manual-import",
+    line_observed_at: "2023-06-15T15:00:00Z",
+    why: ["Projected 4.90 strikeouts vs a line of 3.5 -- 1.40 above the line."],
+    risks: [],
     ...overrides,
   };
 }

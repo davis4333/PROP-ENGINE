@@ -39,6 +39,11 @@ export interface ProjectionOut {
   is_late_publication: boolean;
   record_label: string;
   grade: GradeOut | null;
+  edge: number | null;
+  line_source: string | null;
+  line_observed_at: string | null;
+  why: string[];
+  risks: string[];
 }
 
 export interface TodayResponse {
