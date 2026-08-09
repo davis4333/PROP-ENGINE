@@ -32,6 +32,8 @@ from cassandra.api.schemas import (
     PipelineRunOut,
     PipelineStageOut,
     RunActionResponse,
+    ScoreboardOut,
+    ScoreboardWindowOut,
     SourceHealthOut,
     TrackerSummaryOut,
     UnmatchedLineImportEntryOut,
@@ -43,6 +45,7 @@ from cassandra.db.models.registry import ModelArtifact, ModelRegistryEvent
 from cassandra.db.models.sources import SourceHealth
 from cassandra.decision.engine import DECISION_POLICY_VERSION
 from cassandra.features.builders import FEATURE_SET_VERSION
+from cassandra.grading.scoreboard import WindowRecord, build_scoreboard
 from cassandra.grading.tracker import reset_tracker, tracker_summary
 from cassandra.ingestion.manual_line_import import LineImportEntry, commit_line_import, preview_line_import
 from cassandra.ledger.service import current_projections_for_slate
@@ -202,6 +205,7 @@ def get_admin_status(db: Session = Depends(get_db)) -> AdminStatusResponse:
         active_model=active_model_out,
         pending_model_candidates=pending_candidate_outs,
         tracker=_tracker_out(db),
+        scoreboard=_scoreboard_out(db),
         blocking_issues=blocking_issues,
         today_slate_date=today_slate_date,
         today_games_count=today_games_count,
@@ -234,6 +238,31 @@ def _historical_training_rows(db: Session) -> int:
     live pipeline itself (CLAUDE.md non-negotiable #8 governs reading
     this data as a *decision input*, not counting it for display)."""
     return db.execute(select(func.count()).select_from(HistoricalPitcherStart)).scalar_one()
+
+
+def _scoreboard_window_out(window: WindowRecord) -> ScoreboardWindowOut:
+    return ScoreboardWindowOut(
+        wins=window.wins,
+        losses=window.losses,
+        pushes=window.pushes,
+        voids=window.voids,
+        no_plays=window.no_plays,
+        waiting=window.waiting,
+        win_rate=window.win_rate,
+        mean_absolute_error=window.mean_absolute_error,
+        projection_error_sample_size=window.projection_error_sample_size,
+    )
+
+
+def _scoreboard_out(db: Session) -> ScoreboardOut:
+    board = build_scoreboard(db)
+    return ScoreboardOut(
+        as_of=board.as_of,
+        today=_scoreboard_window_out(board.today),
+        last_7_days=_scoreboard_window_out(board.last_7_days),
+        last_30_days=_scoreboard_window_out(board.last_30_days),
+        all_time=_scoreboard_window_out(board.all_time),
+    )
 
 
 def _tracker_out(db: Session) -> TrackerSummaryOut:

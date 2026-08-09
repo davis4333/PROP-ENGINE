@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import styles from "./page.module.css";
 import { ModelComparisonCard } from "@/components/ModelComparisonCard";
 import { PipelineStageTracker } from "@/components/PipelineStageTracker";
+import { Scoreboard } from "@/components/Scoreboard";
 import { SourceHealthTile } from "@/components/SourceHealthTile";
 import { SystemSnapshot } from "@/components/SystemSnapshot";
 import {
@@ -340,6 +341,16 @@ export default function AdminPage() {
                 ))}
               </div>
             )}
+          </section>
+
+          <section className={styles.section}>
+            <h2 className={styles.sectionTitle}>Track Record</h2>
+            <p className={styles.subtitle}>
+              The permanent, un-resettable record -- LIVE picks only, never
+              mixed with DEMO/BACKTEST/PAPER/SHADOW results. As of{" "}
+              {new Date(status.scoreboard.as_of).toLocaleString()}.
+            </p>
+            <Scoreboard scoreboard={status.scoreboard} />
           </section>
 
           <section className={styles.section}>

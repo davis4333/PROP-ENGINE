@@ -153,7 +153,7 @@ def publish_projection(
     return row
 
 
-def _official_first_then_latest_version(query):
+def official_first_then_latest_version(query):
     """Shared DISTINCT ON ordering for both current_projections_for_slate
     and recent_current_projections: prefer the latest genuinely official
     version (published, and not late per ADR 0008) per logical_key over a
@@ -180,7 +180,7 @@ def _official_first_then_latest_version(query):
 
 def current_projections_for_slate(session: Session, game_ids: list[str]) -> list[Projection]:
     """The latest -- preferring official, see
-    _official_first_then_latest_version -- version of every projection
+    official_first_then_latest_version -- version of every projection
     for the given games. "Current" is still derived by query, never a
     mutable flag (ADR 0002)."""
     if not game_ids:
@@ -188,7 +188,7 @@ def current_projections_for_slate(session: Session, game_ids: list[str]) -> list
     base = select(Projection.logical_key, Projection.projection_id, Projection.version).where(
         Projection.game_id.in_(game_ids)
     )
-    subq = _official_first_then_latest_version(base).subquery()
+    subq = official_first_then_latest_version(base).subquery()
     stmt = select(Projection).join(subq, Projection.projection_id == subq.c.projection_id)
     return list(session.execute(stmt).scalars().all())
 
@@ -203,10 +203,10 @@ def recent_current_projections(session: Session, limit: int = 100) -> list[Proje
     across all slates, most recently created first, for the ledger view
     when no slate_date filter is given. Same "current" derived-by-query
     pattern as current_projections_for_slate (see
-    _official_first_then_latest_version), just without the game_ids
+    official_first_then_latest_version), just without the game_ids
     filter."""
     base = select(Projection.logical_key, Projection.projection_id, Projection.version)
-    subq = _official_first_then_latest_version(base).subquery()
+    subq = official_first_then_latest_version(base).subquery()
     stmt = (
         select(Projection)
         .join(subq, Projection.projection_id == subq.c.projection_id)

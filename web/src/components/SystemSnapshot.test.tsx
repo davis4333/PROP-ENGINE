@@ -3,6 +3,18 @@ import { render, screen } from "@testing-library/react";
 import { SystemSnapshot } from "./SystemSnapshot";
 import type { AdminStatusResponse } from "@/lib/types";
 
+const EMPTY_WINDOW = {
+  wins: 0,
+  losses: 0,
+  pushes: 0,
+  voids: 0,
+  no_plays: 0,
+  waiting: 0,
+  win_rate: null,
+  mean_absolute_error: null,
+  projection_error_sample_size: 0,
+};
+
 function makeStatus(
   overrides: Partial<AdminStatusResponse> = {},
 ): AdminStatusResponse {
@@ -25,6 +37,13 @@ function makeStatus(
       win_rate: 0.6,
       tracker_started_at: "2026-08-01T00:00:00Z",
       last_reset_by: null,
+    },
+    scoreboard: {
+      as_of: "2026-08-09T00:00:00Z",
+      today: EMPTY_WINDOW,
+      last_7_days: EMPTY_WINDOW,
+      last_30_days: EMPTY_WINDOW,
+      all_time: EMPTY_WINDOW,
     },
     blocking_issues: [],
     today_slate_date: "2026-08-09",

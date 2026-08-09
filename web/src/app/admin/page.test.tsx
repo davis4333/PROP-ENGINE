@@ -9,6 +9,18 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+const EMPTY_WINDOW = {
+  wins: 0,
+  losses: 0,
+  pushes: 0,
+  voids: 0,
+  no_plays: 0,
+  waiting: 0,
+  win_rate: null,
+  mean_absolute_error: null,
+  projection_error_sample_size: 0,
+};
+
 const MINIMAL_ADMIN_STATUS = {
   sources: [],
   recent_runs: [],
@@ -28,6 +40,13 @@ const MINIMAL_ADMIN_STATUS = {
     win_rate: null,
     tracker_started_at: "2026-08-01T00:00:00Z",
     last_reset_by: null,
+  },
+  scoreboard: {
+    as_of: "2026-08-09T00:00:00Z",
+    today: EMPTY_WINDOW,
+    last_7_days: EMPTY_WINDOW,
+    last_30_days: EMPTY_WINDOW,
+    all_time: EMPTY_WINDOW,
   },
   blocking_issues: [],
   today_slate_date: "2026-08-09",

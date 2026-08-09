@@ -173,6 +173,30 @@ class TrackerSummaryOut(BaseModel):
     last_reset_by: str | None
 
 
+class ScoreboardWindowOut(BaseModel):
+    """One time window of the LIVE-only track record (grading/
+    scoreboard.py) -- strictly never mixes in DEMO/BACKTEST/PAPER/SHADOW
+    results."""
+
+    wins: int
+    losses: int
+    pushes: int
+    voids: int
+    no_plays: int
+    waiting: int
+    win_rate: float | None
+    mean_absolute_error: float | None
+    projection_error_sample_size: int
+
+
+class ScoreboardOut(BaseModel):
+    as_of: datetime
+    today: ScoreboardWindowOut
+    last_7_days: ScoreboardWindowOut
+    last_30_days: ScoreboardWindowOut
+    all_time: ScoreboardWindowOut
+
+
 class AdminStatusResponse(BaseModel):
     sources: list[SourceHealthOut]
     recent_runs: list[PipelineRunOut]
@@ -190,6 +214,7 @@ class AdminStatusResponse(BaseModel):
     # list in the common case (nothing pending review).
     pending_model_candidates: list[PendingModelCandidateOut]
     tracker: TrackerSummaryOut
+    scoreboard: ScoreboardOut
     blocking_issues: list[str]
     # System-snapshot strip: real counts for "today" (ADR 0009 operating
     # tz), computed via the exact same query GET /api/today uses -- never

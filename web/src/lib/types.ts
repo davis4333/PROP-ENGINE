@@ -123,6 +123,26 @@ export interface TrackerSummaryOut {
   last_reset_by: string | null;
 }
 
+export interface ScoreboardWindowOut {
+  wins: number;
+  losses: number;
+  pushes: number;
+  voids: number;
+  no_plays: number;
+  waiting: number;
+  win_rate: number | null;
+  mean_absolute_error: number | null;
+  projection_error_sample_size: number;
+}
+
+export interface ScoreboardOut {
+  as_of: string;
+  today: ScoreboardWindowOut;
+  last_7_days: ScoreboardWindowOut;
+  last_30_days: ScoreboardWindowOut;
+  all_time: ScoreboardWindowOut;
+}
+
 export interface AdminStatusResponse {
   sources: SourceHealthOut[];
   recent_runs: PipelineRunOut[];
@@ -134,6 +154,7 @@ export interface AdminStatusResponse {
   active_model: ActiveModelOut | null;
   pending_model_candidates: PendingModelCandidateOut[];
   tracker: TrackerSummaryOut;
+  scoreboard: ScoreboardOut;
   blocking_issues: string[];
   today_slate_date: string;
   today_games_count: number;
