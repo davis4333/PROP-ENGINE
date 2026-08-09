@@ -17,8 +17,19 @@ const nextConfig: NextConfig = {
   // single-port hosts like Replit, and avoids CORS entirely everywhere
   // else too. Server Components (Today/Ledger) still call the engine
   // directly via API_BASE_URL; this rewrite only serves the browser.
+  // `/health` is proxied too, not just `/api/:path*` -- the Admin page's
+  // client-side dev-mode-bypass probe (lib/api.ts's fetchHealth()) calls
+  // it directly; without this it 404s against Next.js's own (nonexistent)
+  // `/health` route in the real single-origin deployment topology, always
+  // falling back to requiring a password even when the engine reports
+  // auth isn't needed. Found by actually running both dev servers rather
+  // than trusting the unit tests, which mock fetch and can't catch a
+  // proxy config gap like this.
   async rewrites() {
-    return [{ source: "/api/:path*", destination: `${apiBaseUrl}/api/:path*` }];
+    return [
+      { source: "/api/:path*", destination: `${apiBaseUrl}/api/:path*` },
+      { source: "/health", destination: `${apiBaseUrl}/health` },
+    ];
   },
   // Phase 8 security hardening -- this Next.js app, not the FastAPI
   // engine, is the one actually publicly reachable in the deployed
