@@ -56,6 +56,24 @@ class ProjectionOut(BaseModel):
     is_late_publication: bool
     record_label: str
     grade: GradeOut | None = None
+    # Recomputed from the stored probabilities (decision/engine.py's
+    # edge_for_display) -- the same edge decide() used to pick OVER vs
+    # UNDER, re-exposed for display since Projection doesn't persist its
+    # own edge column. None only when there was never a real line.
+    edge: float | None = None
+    # Re-derived via the same point-in-time as-of query decide() itself
+    # used at publish time (see api/assembly.py) -- which source produced
+    # the line actually decided against, and how old it was as of the
+    # freeze cutoff. Both null when there was no line at all.
+    line_source: str | None = None
+    line_observed_at: datetime | None = None
+    # Plain-English "why Cassandra likes this play" / "risks to know
+    # about" -- built only from stored features/probabilities/reason
+    # codes (decision/explain.py), never invented after the fact. `why`
+    # is always empty for a NO_PLAY -- there's nothing to like about a
+    # rejected/uncertain call, only reasons, which live in `risks`.
+    why: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
 
 
 class TodayResponse(BaseModel):

@@ -197,6 +197,21 @@ def decide(
     )
 
 
+def edge_for_display(probability_over: float | None, probability_under: float | None) -> float | None:
+    """Recomputes the exact same edge `decide()` uses internally to pick
+    OVER vs UNDER (`max(probability_over - 0.5, probability_under - 0.5)`),
+    from already-published, already-stored probabilities -- for display
+    only (e.g. the API/Today page), never to make or revise a decision.
+    The single source of truth for the formula stays `decide()` itself;
+    this just re-exposes it for a projection row that doesn't persist its
+    own `edge` column. Returns None only when there's no line at all --
+    `decide()`'s `line=None` branch is the only case that leaves both
+    probabilities null."""
+    if probability_over is None or probability_under is None:
+        return None
+    return max(probability_over - 0.5, probability_under - 0.5)
+
+
 def reproducibility_hash(
     *,
     source_snapshot_id: str,

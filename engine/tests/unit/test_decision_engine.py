@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from cassandra.decision.engine import decide, reproducibility_hash
+import pytest
+
+from cassandra.decision.engine import decide, edge_for_display, reproducibility_hash
 from cassandra.ingestion.quality_gate import QualityFinding
 from cassandra.models.baseline import PoissonStrikeoutDistribution
 
@@ -195,6 +197,27 @@ def test_decision_policy_version_recorded():
 
 
 # --- reproducibility_hash ------------------------------------------------
+
+
+def test_edge_for_display_matches_decides_own_edge_for_a_real_decision():
+    finding_free: list = []
+    dist = PoissonStrikeoutDistribution(mean=8.0)
+    decision = decide(5.5, dist, finding_free)
+    assert decision.decision == "OVER"
+    assert edge_for_display(decision.probability_over, decision.probability_under) == decision.edge
+
+
+def test_edge_for_display_none_only_when_no_line_was_ever_available():
+    assert edge_for_display(None, None) is None
+    assert edge_for_display(0.5, None) is None
+    assert edge_for_display(None, 0.5) is None
+
+
+def test_edge_for_display_picks_the_larger_side_same_as_decide():
+    # 0.7/0.3 -- OVER side (0.7) wins: 0.7 - 0.5 = 0.2
+    assert edge_for_display(0.7, 0.3) == pytest.approx(0.2)
+    # UNDER side wins instead
+    assert edge_for_display(0.3, 0.65) == pytest.approx(0.15)
 
 
 def test_reproducibility_hash_deterministic():

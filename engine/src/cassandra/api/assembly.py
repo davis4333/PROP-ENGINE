@@ -15,14 +15,20 @@ touched by this lookup.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cassandra.api.schemas import GradeOut, ProjectionOut, ReasonCodeOut
+from cassandra.db.models.features import FeatureValue
 from cassandra.db.models.grading import Grade
 from cassandra.db.models.identity import Game, Player, Team
 from cassandra.db.models.projection import Projection
-from cassandra.db.models.raw import RawProbablePitcher
+from cassandra.db.models.raw import RawLine, RawProbablePitcher
+from cassandra.decision.engine import edge_for_display
+from cassandra.decision.explain import build_explanation
+from cassandra.pit.asof import all_as_of
 
 
 def _pitcher_team_mlb_id(session: Session, game: Game, player: Player | None) -> int | None:
@@ -38,6 +44,56 @@ def _pitcher_team_mlb_id(session: Session, game: Game, player: Player | None) ->
         .limit(1)
     )
     return session.execute(stmt).scalars().first()
+
+
+def _features_for(session: Session, projection: Projection) -> dict[str, object] | None:
+    """The exact features blob build_features() computed for this
+    projection -- joined by (snapshot_id, player_id, game_id,
+    feature_set_version), the same keys features/builders.py's caller
+    (orchestration/run_slate.py) wrote it under. None only if a
+    projection somehow lacks a snapshot/feature_set_version (shouldn't
+    happen for a real pipeline row) or the row genuinely isn't there."""
+    if projection.source_snapshot_id is None or projection.feature_set_version is None:
+        return None
+    stmt = (
+        select(FeatureValue.features)
+        .where(
+            FeatureValue.snapshot_id == projection.source_snapshot_id,
+            FeatureValue.player_id == projection.player_id,
+            FeatureValue.game_id == projection.game_id,
+            FeatureValue.feature_set_version == projection.feature_set_version,
+        )
+        .limit(1)
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def _line_provenance_for(
+    session: Session, projection: Projection, game: Game | None, player: Player | None
+) -> tuple[str | None, datetime | None]:
+    """Re-derives which raw_lines source/observation the decision was
+    actually made against, via the exact same point-in-time as-of query
+    pit/snapshot_builder.py used at publish time (cutoff=projection.as_of,
+    which is permanently fixed once published) -- never a fresh "latest
+    line right now" lookup, which could show a source/age that has
+    nothing to do with what was actually decided. (source, observed_at),
+    both None when there's no line (or identity can't be resolved)."""
+    if game is None or game.mlb_game_pk is None or player is None or player.mlb_person_id is None:
+        return None, None
+    lines = all_as_of(
+        session,
+        RawLine,
+        {
+            "mlb_game_pk": game.mlb_game_pk,
+            "player_mlb_id": player.mlb_person_id,
+            "market": projection.market,
+        },
+        projection.as_of,
+    )
+    if not lines:
+        return None, None
+    latest = lines[0]
+    return latest.source_id, latest.observed_at
 
 
 def assemble_projection_out(session: Session, projection: Projection, grade: Grade | None) -> ProjectionOut:
@@ -57,6 +113,25 @@ def assemble_projection_out(session: Session, projection: Projection, grade: Gra
         else:
             team_name, opponent_name = (home.name if home else None), (away.name if away else None)
 
+    projection_mean = float(projection.projection_mean) if projection.projection_mean is not None else None
+    line = float(projection.line) if projection.line is not None else None
+    probability_over = float(projection.probability_over) if projection.probability_over is not None else None
+    probability_under = (
+        float(projection.probability_under) if projection.probability_under is not None else None
+    )
+    edge = edge_for_display(probability_over, probability_under)
+    features = _features_for(session, projection)
+    line_source, line_observed_at = _line_provenance_for(session, projection, game, player)
+    why, risks = build_explanation(
+        decision=projection.decision,
+        decision_status=projection.decision_status,
+        projection_mean=projection_mean,
+        line=line,
+        edge=edge,
+        features=features,
+        reason_codes=list(projection.reason_codes),
+    )
+
     return ProjectionOut(
         projection_id=projection.projection_id,
         logical_key=projection.logical_key,
@@ -67,15 +142,11 @@ def assemble_projection_out(session: Session, projection: Projection, grade: Gra
         opponent=opponent_name,
         game_id=projection.game_id,
         scheduled_start_utc=scheduled_start_utc,
-        line=float(projection.line) if projection.line is not None else None,
-        projection_mean=float(projection.projection_mean) if projection.projection_mean is not None else None,
+        line=line,
+        projection_mean=projection_mean,
         projection_sd=float(projection.projection_sd) if projection.projection_sd is not None else None,
-        probability_over=float(projection.probability_over)
-        if projection.probability_over is not None
-        else None,
-        probability_under=(
-            float(projection.probability_under) if projection.probability_under is not None else None
-        ),
+        probability_over=probability_over,
+        probability_under=probability_under,
         probability_push=(
             float(projection.probability_push) if projection.probability_push is not None else None
         ),
@@ -89,6 +160,11 @@ def assemble_projection_out(session: Session, projection: Projection, grade: Gra
         published_at=projection.published_at,
         is_late_publication=projection.is_late_publication,
         record_label=projection.record_label,
+        edge=edge,
+        line_source=line_source,
+        line_observed_at=line_observed_at,
+        why=why,
+        risks=risks,
         grade=(
             GradeOut(
                 result=grade.result, actual_strikeouts=grade.actual_strikeouts, graded_at=grade.graded_at
