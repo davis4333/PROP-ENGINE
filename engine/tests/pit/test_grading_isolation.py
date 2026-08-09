@@ -16,9 +16,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 import cassandra.features.builders as features_builders
 import cassandra.grading.service as grading_service
+import cassandra.historical.challenger_negative_binomial as historical_challenger_negative_binomial
 import cassandra.historical.challenger_poisson as historical_challenger_poisson
 import cassandra.historical.dataset_builder as historical_dataset_builder
 import cassandra.models.baseline as models_baseline
+import cassandra.models.negative_binomial as models_negative_binomial
+import cassandra.models.negative_binomial_regression as models_negative_binomial_regression
 import cassandra.models.poisson_regression as models_poisson_regression
 import cassandra.orchestration.run_slate as orchestration_run_slate
 import cassandra.pit.asof as pit_asof
@@ -82,6 +85,25 @@ def test_historical_challenger_poisson_module_never_references_final_box_scores(
     produced -- it has no business touching the live grading table at
     all."""
     assert "RawFinalBoxScore" not in _referenced_names(historical_challenger_poisson)
+
+
+def test_negative_binomial_model_module_never_references_final_box_scores():
+    """The negative-binomial challenger (added to fix a real tail-
+    calibration gap the poisson-regression challenger was found to have)
+    is a new live-servable model, same isolation requirement as every
+    other model module."""
+    assert "RawFinalBoxScore" not in _referenced_names(models_negative_binomial)
+
+
+def test_negative_binomial_regression_model_module_never_references_final_box_scores():
+    assert "RawFinalBoxScore" not in _referenced_names(models_negative_binomial_regression)
+
+
+def test_historical_challenger_negative_binomial_module_never_references_final_box_scores():
+    """Fits only against rows a frozen training dataset already
+    produced, same as challenger_poisson.py -- no business touching the
+    live grading table."""
+    assert "RawFinalBoxScore" not in _referenced_names(historical_challenger_negative_binomial)
 
 
 def test_grading_service_is_the_only_reader_of_final_box_scores():

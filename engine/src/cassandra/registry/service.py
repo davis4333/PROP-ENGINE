@@ -52,9 +52,10 @@ from cassandra.db.models.registry import MODEL_REGISTRY_STATES, ModelArtifact, M
 from cassandra.models.baseline import MODEL_VERSION as BASELINE_MODEL_VERSION
 from cassandra.models.baseline import BaselinePoissonModel
 from cassandra.models.interface import StrikeoutModel
+from cassandra.models.negative_binomial_regression import NegativeBinomialRegressionModel
 from cassandra.models.poisson_regression import PoissonRegressionModel
 
-REGISTRY_SERVICE_VERSION = "registry-service-0.4.0"
+REGISTRY_SERVICE_VERSION = "registry-service-0.5.0"
 
 # model_family values resolve_active_model() knows how to reconstruct.
 # Kept explicit and checked (rather than a bare try/except around a
@@ -62,7 +63,7 @@ REGISTRY_SERVICE_VERSION = "registry-service-0.4.0"
 # with a clear message instead of silently falling back to the baseline
 # -- an operator who promoted a real artifact needs to know their
 # promotion isn't actually taking effect, not have it silently ignored.
-SUPPORTED_LIVE_MODEL_FAMILIES = ("poisson-regression",)
+SUPPORTED_LIVE_MODEL_FAMILIES = ("poisson-regression", "negative-binomial-regression")
 
 
 def compute_artifact_checksum(
@@ -473,7 +474,23 @@ def resolve_active_model(session: Session) -> ResolvedModel:
             model=BaselinePoissonModel(), model_version=BASELINE_MODEL_VERSION, active_artifact_id=None
         )
     if artifact.model_family == "poisson-regression":
-        model = PoissonRegressionModel(coefficients=tuple(float(c) for c in artifact.coefficients))
+        model: StrikeoutModel = PoissonRegressionModel(
+            coefficients=tuple(float(c) for c in artifact.coefficients)
+        )
+        return ResolvedModel(
+            model=model, model_version=artifact.fitted_model_version, active_artifact_id=artifact.artifact_id
+        )
+    if artifact.model_family == "negative-binomial-regression":
+        # `dispersion` isn't part of coefficients/coefficient_order (those
+        # stay strictly aligned with design_row()'s mean-regression order,
+        # same as the poisson-regression family) -- it lives in
+        # preprocessing_rules, the field db/models/registry.py's own
+        # docstring says is exactly for family-specific values with no
+        # fixed shape across families.
+        model = NegativeBinomialRegressionModel(
+            coefficients=tuple(float(c) for c in artifact.coefficients),
+            dispersion=float(artifact.preprocessing_rules["dispersion"]),
+        )
         return ResolvedModel(
             model=model, model_version=artifact.fitted_model_version, active_artifact_id=artifact.artifact_id
         )

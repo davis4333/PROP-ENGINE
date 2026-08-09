@@ -608,10 +608,15 @@ def train_walk_forward_challenger_cmd(
     dataset_id: str = typer.Option(..., "--dataset-id"),
     output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), "--output-dir"),
     n_folds: int = typer.Option(5, "--n-folds"),
+    family: str = typer.Option(
+        "poisson-regression",
+        "--family",
+        help="Model family, e.g. 'poisson-regression' or 'negative-binomial-regression'.",
+    ),
 ) -> None:
-    """Trains a Poisson-regression challenger model under time-ordered
-    walk-forward validation against a frozen dataset, comparing it fold
-    by fold to the permanent, unmodified baseline (`k-model-0.1.0`) --
+    """Trains a challenger model under time-ordered walk-forward
+    validation against a frozen dataset, comparing it fold by fold to the
+    permanent, unmodified baseline (`k-model-0.1.0`) --
     historical/walk_forward.py. Requires the `training` extra (numpy);
     imported lazily here so every other CLI command keeps working
     unmodified in an environment that hasn't installed it. **No automatic
@@ -637,7 +642,7 @@ def train_walk_forward_challenger_cmd(
         for line in fh:
             rows.append(json_module.loads(line))
 
-    result = run_walk_forward_validation(rows, dataset_id=dataset_id, n_folds=n_folds)
+    result = run_walk_forward_validation(rows, dataset_id=dataset_id, n_folds=n_folds, family=family)
 
     eval_dir = Path(output_dir) / "evaluations"
     eval_dir.mkdir(parents=True, exist_ok=True)
@@ -710,6 +715,7 @@ def train_final_model_cmd(
     try:
         from cassandra.historical.train_final_model import (
             SUPPORTED_MODEL_FAMILIES,
+            train_final_negative_binomial_model,
             train_final_poisson_model,
         )
     except ImportError as exc:
@@ -748,7 +754,12 @@ def train_final_model_cmd(
             "walk_forward_dataset_id": wf_data["dataset_id"],
         }
 
-    result = train_final_poisson_model(
+    train_fn = (
+        train_final_negative_binomial_model
+        if family == "negative-binomial-regression"
+        else train_final_poisson_model
+    )
+    result = train_fn(
         manifest=manifest,
         rows=rows,
         operator=operator,

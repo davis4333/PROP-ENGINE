@@ -730,9 +730,9 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
     comfortably excluding zero. The improvement is real, not noise. The
     tail-calibration weakness at 7.5+ lines (both models share the same
     mean=variance Poisson assumption despite `variance/mean = 1.30` in
-    the real outcome data) is still the one live, unaddressed caveat --
-    fixing it needs an actual different distribution family (negative
-    binomial), not a significance test.
+    the real outcome data) needed an actual different distribution
+    family, not a significance test. *(UPDATE, same night: built --
+    see the negative-binomial challenger entry below.)*
   - **Same follow-up: a numerical edge-case fuzz test found a real gap,
     now fixed.** Feeding `NaN`/`Infinity` feature values (11 extreme/
     malformed cases x both models) found that both `BaselinePoissonModel`
@@ -803,6 +803,61 @@ and never read by `pit/asof.py`/`features/`/`models/`/`decision/`
     `test_lines_preview_rejects_an_absurd_line_value`) and the full gate
     (471 backend tests, frontend, e2e/accessibility, build) passes clean
     against a freshly migrated database.
+- **Third follow-up the same night: a negative-binomial challenger built
+  to actually close the tail-calibration gap above, not just document
+  it.** Both `models/baseline.py`'s formula and `models/
+  poisson_regression.py`'s GLM hard-code variance = mean via
+  `PoissonStrikeoutDistribution` -- the diagnosed cause of the poisson-
+  regression challenger's weaker calibration at 7.5+ lines. New modules:
+  `models/negative_binomial.py`
+  (`NegativeBinomialStrikeoutDistribution`, mean=mu/variance=mu+alpha*mu^2,
+  numpy-free, same `MAX_CDF_K`-capped `cdf()` defense as the Poisson
+  distribution), `models/negative_binomial_regression.py`
+  (`NegativeBinomialRegressionModel`, deliberately reuses the *exact same*
+  mean regression as `PoissonRegressionModel` -- same `design_row()`/
+  coefficients -- since the diagnosed problem was the variance
+  assumption, not the mean), and `historical/challenger_negative_
+  binomial.py` (fits the mean via `challenger_poisson.py`'s existing IRLS
+  unchanged, then fits the one new dispersion parameter by a 1-D golden-
+  section MLE search -- deliberately not a joint two-parameter fit, a
+  much harder problem this didn't need). Wired into
+  `registry/service.py` (`SUPPORTED_LIVE_MODEL_FAMILIES`,
+  `resolve_active_model()`), `historical/train_final_model.py`
+  (`train_final_negative_binomial_model`, dispersion stored in
+  `preprocessing_rules` since it isn't part of the mean-regression
+  `coefficients`), and `historical/walk_forward.py` (generalized to a
+  `family` parameter with a small fit-function dispatch table) -- a real
+  `CANDIDATE` artifact was registered through the actual `cassandra
+  train-walk-forward-challenger --family negative-binomial-regression`
+  /`train-final-model --family negative-binomial-regression --register`
+  CLI flow, the same human-gated path as any other candidate, not a
+  one-off script.
+  - **A real bug was found and fixed while building this**: the initial
+    MLE implementation's log-likelihood accidentally multiplied one term
+    by `len(actuals)` twice (`N^2` instead of `N`), which was caught
+    specifically by cross-checking the fitted dispersion against a
+    simple method-of-moments estimate on the same data before trusting
+    it -- they disagreed by ~29x, which is exactly what that bug
+    predicts. Fixed; after the fix, the MLE and method-of-moments
+    estimates agree closely (alpha ~0.025 both ways).
+  - **Real out-of-sample evidence, not just in-sample**: aggregate MAE
+    across 7 held-out folds is identical to the poisson-regression
+    challenger's (1.8495 both -- confirms this changed nothing about
+    accuracy, only calibration, exactly as intended). At the two
+    thresholds specifically flagged as weak (7.5, 8.5), the calibration
+    miss (|predicted - empirical|) shrinks from 0.9pp/0.9pp (poisson-
+    regression) to 0.2pp/0.3pp (negative-binomial) on 15,785 pooled
+    held-out rows -- a real, validated fix for the diagnosed problem, not
+    a theoretical one.
+  - **Not promoted.** Registered as `CANDIDATE`
+    (`artifact_3205b92c10f7` in this session's dev database) with the
+    real walk-forward comparison attached, exactly like every other
+    candidate -- awaiting the same human review/promotion decision as
+    always. Full regression test coverage added (distribution math,
+    Poisson-limit sanity check as dispersion shrinks to ~0, MLE recovery
+    against synthetic known-dispersion data, registry resolution, PIT
+    isolation, walk-forward family dispatch) -- 504 backend tests total,
+    full gate clean against a freshly migrated database.
 - **Backfill run status: complete.** The 2023-01-01-to-present backfill
   (`backfill_run_id=backfill_8aae900893d7`) finished with `status=
   completed`, 0 failed games across its entire run, and a small number

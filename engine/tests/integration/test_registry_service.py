@@ -15,6 +15,7 @@ from sqlalchemy.exc import DBAPIError, MultipleResultsFound
 from cassandra.db.models.registry import ModelArtifact, ModelRegistryEvent
 from cassandra.models.baseline import MODEL_VERSION as BASELINE_MODEL_VERSION
 from cassandra.models.baseline import BaselinePoissonModel
+from cassandra.models.negative_binomial_regression import NegativeBinomialRegressionModel
 from cassandra.models.poisson_regression import PoissonRegressionModel
 from cassandra.registry.service import (
     active_artifact,
@@ -268,6 +269,33 @@ def test_resolve_active_model_returns_the_active_poisson_artifact(db_session):
     resolved = resolve_active_model(db_session)
     assert isinstance(resolved.model, PoissonRegressionModel)
     assert resolved.model.coefficients == (0.5, 0.1, 2.0, -0.02, 0.0)
+    assert resolved.model_version == artifact.fitted_model_version
+    assert resolved.active_artifact_id == artifact.artifact_id
+
+
+def test_resolve_active_model_returns_the_active_negative_binomial_artifact(db_session):
+    artifact = _create(
+        db_session,
+        model_family="negative-binomial-regression",
+        model_code_version="negative-binomial-regression-challenger-0.1.0",
+        coefficients=[0.5, 0.1, 2.0, -0.02, 0.0],
+        # dispersion lives in preprocessing_rules, not coefficients (see
+        # registry/service.py's resolve_active_model() and train_final_
+        # model.py's _negative_binomial_preprocessing_rules()).
+        preprocessing_rules={"dispersion": 0.025},
+    )
+    record_registry_event(
+        db_session,
+        artifact_id=artifact.artifact_id,
+        event_type="activated",
+        to_status="ACTIVE",
+        operator="tyler",
+        from_status="CANDIDATE",
+    )
+    resolved = resolve_active_model(db_session)
+    assert isinstance(resolved.model, NegativeBinomialRegressionModel)
+    assert resolved.model.coefficients == (0.5, 0.1, 2.0, -0.02, 0.0)
+    assert resolved.model.dispersion == 0.025
     assert resolved.model_version == artifact.fitted_model_version
     assert resolved.active_artifact_id == artifact.artifact_id
 

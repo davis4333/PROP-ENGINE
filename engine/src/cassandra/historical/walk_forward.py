@@ -17,6 +17,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from cassandra.historical.challenger_negative_binomial import (
+    NEGATIVE_BINOMIAL_CHALLENGER_VERSION,
+    fit_negative_binomial_regression,
+)
 from cassandra.historical.challenger_poisson import (
     POISSON_CHALLENGER_VERSION,
     fit_poisson_regression,
@@ -24,9 +28,20 @@ from cassandra.historical.challenger_poisson import (
 from cassandra.historical.evaluation import EvaluationReport, evaluate_model
 from cassandra.models.baseline import BaselinePoissonModel
 
-WALK_FORWARD_MODULE_VERSION = "historical-walk-forward-0.1.0"
+WALK_FORWARD_MODULE_VERSION = "historical-walk-forward-0.2.0"
 
 MIN_TRAIN_ROWS = 200  # below this an IRLS fit is unreliable -- see challenger_poisson.py
+
+# family -> (fit function returning an object with `.model` plus
+# convergence info, challenger_model_version). Both challenger families'
+# fit functions share this exact shape (PoissonFitResult /
+# NegativeBinomialFitResult both expose `.model`), so dispatching on it
+# needs no family-specific branching inside run_walk_forward_validation
+# itself -- a future third family only needs an entry here.
+_CHALLENGER_FIT_FUNCTIONS: dict[str, Any] = {
+    "poisson-regression": (fit_poisson_regression, POISSON_CHALLENGER_VERSION),
+    "negative-binomial-regression": (fit_negative_binomial_regression, NEGATIVE_BINOMIAL_CHALLENGER_VERSION),
+}
 
 
 @dataclass(frozen=True)
@@ -100,15 +115,19 @@ def build_expanding_folds(
 
 
 def run_walk_forward_validation(
-    rows: list[dict[str, Any]], *, dataset_id: str, n_folds: int = 5
+    rows: list[dict[str, Any]], *, dataset_id: str, n_folds: int = 5, family: str = "poisson-regression"
 ) -> WalkForwardResult:
-    """For each expanding-window fold: fits a fresh Poisson-regression
-    challenger on that fold's training rows only, then evaluates both the
-    challenger and the permanent, unmodified baseline (`k-model-0.1.0`)
-    against that same fold's validation rows -- so every comparison is
-    apples-to-apples on data neither model has seen. Folds with too few
-    training rows to fit reliably are skipped and counted, never silently
-    dropped."""
+    """For each expanding-window fold: fits a fresh challenger (from
+    `family`, see `_CHALLENGER_FIT_FUNCTIONS`) on that fold's training
+    rows only, then evaluates both the challenger and the permanent,
+    unmodified baseline (`k-model-0.1.0`) against that same fold's
+    validation rows -- so every comparison is apples-to-apples on data
+    neither model has seen. Folds with too few training rows to fit
+    reliably are skipped and counted, never silently dropped."""
+    if family not in _CHALLENGER_FIT_FUNCTIONS:
+        raise ValueError(f"unsupported family {family!r} -- supported: {tuple(_CHALLENGER_FIT_FUNCTIONS)}")
+    fit_challenger, challenger_model_version = _CHALLENGER_FIT_FUNCTIONS[family]
+
     folds_raw = build_expanding_folds(rows, n_folds=n_folds)
     baseline_model = BaselinePoissonModel()
 
@@ -118,7 +137,7 @@ def run_walk_forward_validation(
         if len(train) < MIN_TRAIN_ROWS:
             skipped += 1
             continue
-        challenger_fit = fit_poisson_regression(train)
+        challenger_fit = fit_challenger(train)
         baseline_report = evaluate_model(validation, baseline_model, dataset_id=dataset_id)
         challenger_report = evaluate_model(validation, challenger_fit.model, dataset_id=dataset_id)
         fold_results.append(
@@ -161,7 +180,7 @@ def run_walk_forward_validation(
     return WalkForwardResult(
         walk_forward_module_version=WALK_FORWARD_MODULE_VERSION,
         dataset_id=dataset_id,
-        challenger_model_version=POISSON_CHALLENGER_VERSION,
+        challenger_model_version=challenger_model_version,
         n_folds=len(fold_results),
         n_folds_skipped_insufficient_train_data=skipped,
         folds=fold_results,

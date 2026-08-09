@@ -9,6 +9,8 @@ import math
 import random
 from datetime import date, timedelta
 
+import pytest
+
 from cassandra.historical.walk_forward import (
     MIN_TRAIN_ROWS,
     build_expanding_folds,
@@ -103,3 +105,26 @@ def test_run_walk_forward_validation_aggregates_tier_breakdown_from_held_out_row
         assert set(breakdown.keys()) == {"recent_weighted"}
         assert breakdown["recent_weighted"]["n"] == total_validation_n
         assert breakdown["recent_weighted"]["mae"] >= 0
+
+
+def test_run_walk_forward_validation_rejects_an_unsupported_family():
+    rows = _rows_across_dates(MIN_TRAIN_ROWS * 6, date(2023, 4, 1), seed=7)
+    with pytest.raises(ValueError, match="unsupported family"):
+        run_walk_forward_validation(rows, dataset_id="ds_test", n_folds=5, family="some-future-family")
+
+
+def test_run_walk_forward_validation_supports_the_negative_binomial_family():
+    rows = _rows_across_dates(MIN_TRAIN_ROWS * 6, date(2023, 4, 1), seed=7)
+    result = run_walk_forward_validation(
+        rows, dataset_id="ds_test", n_folds=5, family="negative-binomial-regression"
+    )
+
+    assert result.n_folds > 0
+    assert result.challenger_model_version == "negative-binomial-regression-challenger-0.1.0"
+    assert result.aggregate_challenger_mae >= 0
+    # A real, distinct fit -- not accidentally reusing the Poisson
+    # challenger's numbers, even though both share the same mean
+    # regression (they can legitimately match closely, but the
+    # model_version above already proves this ran the NB code path).
+    for fold in result.folds:
+        assert fold.challenger_converged is True

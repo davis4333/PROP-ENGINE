@@ -32,6 +32,12 @@ import numpy as np
 
 from cassandra.db.models.registry import ModelArtifact
 from cassandra.db.session import session_scope
+from cassandra.historical.challenger_negative_binomial import (
+    MAX_DISPERSION,
+    MIN_DISPERSION,
+    NEGATIVE_BINOMIAL_CHALLENGER_VERSION,
+    fit_negative_binomial_regression,
+)
 from cassandra.historical.challenger_poisson import (
     COEFFICIENT_NAMES,
     CONVERGENCE_TOL,
@@ -44,13 +50,14 @@ from cassandra.historical.challenger_poisson import (
 )
 from cassandra.historical.dataset_builder import DatasetManifest
 from cassandra.historical.evaluation import evaluate_model, write_evaluation_report
+from cassandra.models.negative_binomial_regression import NegativeBinomialRegressionModel
 from cassandra.registry.service import create_model_artifact, register_as_candidate
 
 logger = logging.getLogger(__name__)
 
-TRAIN_FINAL_MODEL_MODULE_VERSION = "train-final-model-0.2.0"
+TRAIN_FINAL_MODEL_MODULE_VERSION = "train-final-model-0.3.0"
 
-SUPPORTED_MODEL_FAMILIES = ("poisson-regression",)
+SUPPORTED_MODEL_FAMILIES = ("poisson-regression", "negative-binomial-regression")
 
 
 @dataclass(frozen=True)
@@ -222,9 +229,148 @@ def train_final_poisson_model(
     )
 
 
+def _negative_binomial_preprocessing_rules(dispersion: float) -> dict[str, Any]:
+    """Same reasoning as `_poisson_preprocessing_rules()` -- pure
+    provenance, never re-derives behavior. `dispersion` (the fitted NB2
+    alpha) lives here rather than in `coefficients`/`coefficient_order`
+    (those stay strictly aligned with `design_row()`'s mean-regression
+    order, identical to the poisson-regression family) -- `preprocessing_
+    rules` is `db/models/registry.py`'s own designated place for values
+    with no fixed shape across families."""
+    return {
+        "dispersion": dispersion,
+        "dispersion_search_bounds": [MIN_DISPERSION, MAX_DISPERSION],
+        "rest_days_default": DEFAULT_REST_DAYS,
+        "prediction_eta_clip_max": 20.0,
+        "fit_eta_clip_min": -20.0,
+        "fit_eta_clip_max": 20.0,
+        "fit_mu_clip_min": 1e-6,
+        "mean_regularization": {"method": "ridge", "lambda": RIDGE_LAMBDA},
+        "mean_max_irls_iterations": MAX_IRLS_ITERATIONS,
+        "mean_convergence_tol": CONVERGENCE_TOL,
+    }
+
+
+def train_final_negative_binomial_model(
+    *,
+    manifest: DatasetManifest,
+    rows: list[dict[str, Any]],
+    operator: str,
+    output_dir: Path,
+    register: bool,
+    notes: str | None = None,
+    walk_forward_metrics: dict[str, Any] | None = None,
+) -> TrainFinalModelResult:
+    """The negative-binomial sibling of `train_final_poisson_model()` --
+    same shape (fit -> evaluate -> write artifact -> reload-and-validate
+    round trip -> optionally register), fitting
+    `historical/challenger_negative_binomial.py`'s regression instead.
+    See that module's docstring for why the mean regression itself is
+    identical to the poisson-regression family's (reused, not
+    re-derived) and only the dispersion parameter is new."""
+    fit_result = fit_negative_binomial_regression(rows)
+    if not fit_result.converged:
+        logger.warning(
+            "train_final_negative_binomial_model: mean-regression IRLS did not converge "
+            "(dataset_id=%s, rows=%d, n_iterations=%d) -- registering anyway, but "
+            "promote-model reviewers should treat this artifact's coefficients as unreliable",
+            manifest.dataset_id,
+            len(rows),
+            fit_result.n_iterations,
+        )
+    fitted = fit_result.model
+    report = evaluate_model(rows, fitted, dataset_id=manifest.dataset_id)
+    write_evaluation_report(report, output_dir / "evaluations")
+
+    coefficients = list(fitted.coefficients)
+    if len(coefficients) != len(COEFFICIENT_NAMES):
+        raise ValueError(
+            f"fit produced {len(coefficients)} coefficients but COEFFICIENT_NAMES has "
+            f"{len(COEFFICIENT_NAMES)} entries -- the shared mean regression and "
+            "COEFFICIENT_NAMES have drifted out of sync"
+        )
+
+    training_metrics: dict[str, Any] = {
+        "mae": report.mae,
+        "rmse": report.rmse,
+        "mean_bias": report.mean_bias,
+        "mean_poisson_deviance": report.mean_poisson_deviance,
+        "dispersion": fitted.dispersion,
+        "mean_irls_converged": fit_result.converged,
+        "mean_irls_n_iterations": fit_result.n_iterations,
+    }
+    if walk_forward_metrics:
+        training_metrics.update(walk_forward_metrics)
+
+    with session_scope() as write_session:
+        artifact = create_model_artifact(
+            write_session,
+            model_family="negative-binomial-regression",
+            model_code_version=NEGATIVE_BINOMIAL_CHALLENGER_VERSION,
+            coefficients=coefficients,
+            coefficient_order=list(COEFFICIENT_NAMES),
+            preprocessing_rules=_negative_binomial_preprocessing_rules(fitted.dispersion),
+            training_dataset_id=manifest.dataset_id,
+            dataset_builder_version=manifest.dataset_builder_version,
+            availability_policy_version=manifest.availability_policy_version,
+            feature_set_version=manifest.feature_set_version,
+            training_seasons=manifest.seasons,
+            training_game_types=manifest.game_types,
+            training_row_count=len(rows),
+            trained_at=datetime.now(UTC),
+            dependency_versions={"numpy": np.__version__},
+            training_metrics=training_metrics,
+            evaluation_report_ids=[report.evaluation_id],
+            created_by=operator,
+            notes=notes,
+        )
+        artifact_id = artifact.artifact_id
+        fitted_model_version = artifact.fitted_model_version
+
+    with session_scope() as reload_session:
+        reloaded_row = reload_session.get(ModelArtifact, artifact_id)
+        if reloaded_row is None:
+            raise RuntimeError(f"artifact {artifact_id} vanished immediately after being written")
+        reloaded_coefficients = tuple(float(c) for c in reloaded_row.coefficients)
+        reloaded_dispersion = float(reloaded_row.preprocessing_rules["dispersion"])
+
+    if reloaded_coefficients != fitted.coefficients or reloaded_dispersion != fitted.dispersion:
+        raise RuntimeError(
+            f"artifact {artifact_id} failed round-trip validation: stored "
+            f"coefficients/dispersion ({reloaded_coefficients}, {reloaded_dispersion}) do not "
+            f"exactly match the fitted values ({fitted.coefficients}, {fitted.dispersion})"
+        )
+    reloaded_model = NegativeBinomialRegressionModel(
+        coefficients=reloaded_coefficients, dispersion=reloaded_dispersion
+    )
+    reloaded_report = evaluate_model(rows, reloaded_model, dataset_id=manifest.dataset_id)
+    if reloaded_report.mae != report.mae or reloaded_report.rmse != report.rmse:
+        raise RuntimeError(
+            f"artifact {artifact_id} failed round-trip validation: the reloaded model's "
+            f"evaluation (mae={reloaded_report.mae}, rmse={reloaded_report.rmse}) does not "
+            f"exactly match the original fit's (mae={report.mae}, rmse={report.rmse})"
+        )
+
+    registry_event_id: str | None = None
+    if register:
+        with session_scope() as register_session:
+            event = register_as_candidate(register_session, artifact_id=artifact_id, operator=operator)
+            registry_event_id = event.event_id
+
+    return TrainFinalModelResult(
+        artifact_id=artifact_id,
+        fitted_model_version=fitted_model_version,
+        evaluation_id=report.evaluation_id,
+        registered=register,
+        registry_event_id=registry_event_id,
+        training_metrics=training_metrics,
+    )
+
+
 __all__ = [
     "SUPPORTED_MODEL_FAMILIES",
     "TRAIN_FINAL_MODEL_MODULE_VERSION",
     "TrainFinalModelResult",
+    "train_final_negative_binomial_model",
     "train_final_poisson_model",
 ]
